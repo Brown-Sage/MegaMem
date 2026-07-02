@@ -1,0 +1,23 @@
+{
+  "name": "megamem",
+  "version": "1.0.0",
+  "description": "MCP-first memory server for AI coding assistants.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test:embed": "node tests/test-embed.js",
+    "test:groq": "node tests/testgroq.js",
+    "test:save": "node tests/test-save.js",
+    "test:retrieve": "node tests/test-retrieve.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "groq-sdk": "^1.3.0",
+    "mongoose": "^9.7.3"
+  }
+}
