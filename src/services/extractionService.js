@@ -1,4 +1,5 @@
 const { completeChat } = require('./groqService')
+const { parseJsonObject } = require('../utils/json')
 
 const MEMORY_TYPES = [
   'preference',
@@ -10,23 +11,6 @@ const MEMORY_TYPES = [
   'bug',
   'other'
 ]
-
-const parseJsonObject = (content) => {
-  const cleaned = content
-    .trim()
-    .replace(/^```(?:json)?/i, '')
-    .replace(/```$/i, '')
-    .trim()
-
-  const firstBrace = cleaned.indexOf('{')
-  const lastBrace = cleaned.lastIndexOf('}')
-
-  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
-    throw new Error(`Memory extraction returned invalid JSON: ${content}`)
-  }
-
-  return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1))
-}
 
 const clampNumber = (value, min, max, fallback) => {
   const number = Number(value)
@@ -112,7 +96,7 @@ const extractMemories = async ({ conversation, maxMemories = 5 }) => {
     maxTokens: 800
   })
 
-  const parsed = parseJsonObject(content)
+  const parsed = parseJsonObject(content, 'Memory extraction')
   const memories = Array.isArray(parsed.memories) ? parsed.memories : []
 
   return memories

@@ -9,6 +9,7 @@
     "test:groq": "node tests/testgroq.js",
     "test:chat": "node tests/test-chat-memory.js",
     "test:extract": "node tests/test-extract-memory.js",
+    "test:conflict": "node tests/test-conflict-memory.js",
     "test:save": "node tests/test-save.js",
     "test:retrieve": "node tests/test-retrieve.js"
   },
