@@ -1,6 +1,8 @@
 require('dotenv').config()
+const mongoose = require('mongoose')
 const connectDB = require('../src/config/db')
 const { detectMemoryConflict } = require('../src/services/conflictService')
+const { applyMemoryDecision } = require('../src/services/memoryService')
 
 const run = async () => {
   await connectDB()
@@ -28,6 +30,22 @@ const run = async () => {
     confidence: decision.confidence,
     reason: decision.reason
   }, null, 2))
+
+  const result = await applyMemoryDecision({
+    decision,
+    sessionId: 'session_001',
+    fallbackText: 'I prefer Python over JavaScript'
+  })
+
+  console.log('\nApplied:')
+  console.log(JSON.stringify({
+    action: result.action,
+    memoryId: result.memory?._id?.toString() || null,
+    text: result.memory?.text || null,
+    reason: result.reason
+  }, null, 2))
+
+  await mongoose.disconnect()
 }
 
 run()

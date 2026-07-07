@@ -8,6 +8,7 @@ pnpm-debug.log*
 lerna-debug.log*
 
 # Dependencies and build output
+.commandcode/
 node_modules/
 dist/
 dist-ssr/
