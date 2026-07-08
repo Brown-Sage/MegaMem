@@ -81,13 +81,9 @@ const buildExtractionMessages = ({ conversation, maxMemories }) => [
   }
 ]
 
-const extractMemories = async ({ conversation, maxMemories = 5 }) => {
-  if (!conversation || typeof conversation !== 'string' || !conversation.trim()) {
-    return []
-  }
-
+const extractFromChunk = async ({ chunk, maxMemories, chunkIndex }) => {
   const messages = buildExtractionMessages({
-    conversation: conversation.trim(),
+    conversation: chunk,
     maxMemories
   })
 
@@ -99,10 +95,68 @@ const extractMemories = async ({ conversation, maxMemories = 5 }) => {
   const parsed = parseJsonObject(content, 'Memory extraction')
   const memories = Array.isArray(parsed.memories) ? parsed.memories : []
 
-  return memories
+  const normalized = memories
     .slice(0, maxMemories)
     .map(normalizeMemory)
     .filter(Boolean)
+
+  if (chunkIndex !== undefined) {
+    console.log(`[pipeline] Memories extracted from chunk ${chunkIndex + 1}: ${normalized.length}`)
+    normalized.forEach((m, i) => console.log(`[pipeline]   ${i + 1}. [${m.type}] (conf=${m.confidence}) ${m.text}`))
+  }
+
+  return normalized
+}
+
+const dedupeExtracted = (memories) => {
+  const seen = new Set()
+  const result = []
+
+  for (const memory of memories) {
+    const key = memory.text.toLowerCase().replace(/\s+/g, ' ').trim()
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(memory)
+  }
+
+  return result
+}
+
+const extractMemories = async ({ conversation, maxMemories = 5, chunks }) => {
+  if (!conversation || typeof conversation !== 'string' || !conversation.trim()) {
+    return []
+  }
+
+  const conversationText = conversation.trim()
+  const conversationChunks = Array.isArray(chunks) && chunks.length > 0
+    ? chunks
+    : [conversationText]
+
+  if (conversationChunks.length === 1) {
+    const memories = await extractFromChunk({
+      chunk: conversationChunks[0],
+      maxMemories
+    })
+    return memories.slice(0, maxMemories)
+  }
+
+  const allMemories = []
+
+  for (let i = 0; i < conversationChunks.length; i++) {
+    const chunk = conversationChunks[i]
+    try {
+      const chunkMemories = await extractFromChunk({
+        chunk,
+        maxMemories,
+        chunkIndex: i
+      })
+      allMemories.push(...chunkMemories)
+    } catch (error) {
+      console.error('chunk extraction failed:', error.message)
+    }
+  }
+
+  return dedupeExtracted(allMemories).slice(0, maxMemories)
 }
 
 module.exports = {
