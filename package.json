@@ -5,13 +5,18 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
+    "mcp": "node src/mcpServer.js",
     "test:embed": "node tests/test-embed.js",
     "test:groq": "node tests/testgroq.js",
     "test:chat": "node tests/test-chat-memory.js",
     "test:extract": "node tests/test-extract-memory.js",
     "test:conflict": "node tests/test-conflict-memory.js",
     "test:save": "node tests/test-save.js",
-    "test:retrieve": "node tests/test-retrieve.js"
+    "test:retrieve": "node tests/test-retrieve.js",
+    "test:chunk": "node tests/test-chunker.js",
+    "test:guard": "node tests/test-token-guard.js",
+    "test:http": "node tests/test-http.js",
+    "test:mcp": "node tests/test-mcp.js"
   },
   "keywords": [],
   "author": "",
