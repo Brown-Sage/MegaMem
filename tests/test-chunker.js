@@ -51,6 +51,28 @@ const run = async () => {
   conversationChunks.forEach((c, i) => {
     console.log(`  chunk ${i + 1}: ${c.length} chars`)
   })
+
+  console.log('\n--- test 7: truncates chunks at DEFAULT_MAX_CHUNKS ---')
+  const hugeText = Array.from({ length: 200 }, (_, i) =>
+    Array.from({ length: 10 }, () => `Line ${i + 1}: ${'x'.repeat(90)}`).join('\n')
+  ).join('\n\n')
+  console.log(`input: ${hugeText.length} chars`)
+  const limited = chunkText(hugeText)
+  console.log(`chunks returned: ${limited.length} (expecting <= 20)`)
+  if (limited.length <= 20) {
+    console.log('OK')
+  } else {
+    console.log('FAIL')
+  }
+
+  console.log('\n--- test 8: custom maxChunks option works ---')
+  const customLimited = chunkText(hugeText, { maxChunks: 5 })
+  console.log(`chunks with maxChunks=5: ${customLimited.length} (expecting 5)`)
+  if (customLimited.length === 5) {
+    console.log('OK')
+  } else {
+    console.log('FAIL')
+  }
 }
 
 run().catch(error => {

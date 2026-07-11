@@ -1,6 +1,7 @@
 const DEFAULT_MAX_CHARS = 6000
 const DEFAULT_OVERLAP_CHARS = 400
 const DEFAULT_MIN_CHUNK_CHARS = 200
+const DEFAULT_MAX_CHUNKS = 20
 
 const splitIntoSentences = (text) => {
   const matches = text.match(/[^.!?\n]+[.!?\n]?/g)
@@ -72,13 +73,22 @@ const chunkText = (text, options = {}) => {
   const maxChars = options.maxChars || DEFAULT_MAX_CHARS
   const overlapChars = options.overlapChars || DEFAULT_OVERLAP_CHARS
   const minChunkChars = options.minChunkChars || DEFAULT_MIN_CHUNK_CHARS
+  const maxChunks = options.maxChunks || DEFAULT_MAX_CHUNKS
 
   if (text.length <= maxChars) {
     return [text.trim()]
   }
 
   const paragraphs = splitIntoParagraphs(text)
-  return buildChunksFromParagraphs({ paragraphs, maxChars, overlapChars, minChunkChars })
+  let chunks = buildChunksFromParagraphs({ paragraphs, maxChars, overlapChars, minChunkChars })
+
+  if (chunks.length > maxChunks) {
+    const dropped = chunks.length - maxChunks
+    console.warn(`[chunker] Truncated chunks from ${chunks.length} to ${maxChunks} (${dropped} chunks dropped)`)
+    chunks = chunks.slice(0, maxChunks)
+  }
+
+  return chunks
 }
 
 module.exports = {
@@ -95,5 +105,6 @@ module.exports = {
     return result
   },
   DEFAULT_MAX_CHARS,
-  DEFAULT_OVERLAP_CHARS
+  DEFAULT_OVERLAP_CHARS,
+  DEFAULT_MAX_CHUNKS
 }
