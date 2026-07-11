@@ -178,11 +178,12 @@ const callMemoryList = async (args) => {
   const memories = await Memory.find({ sessionId })
     .sort({ updatedAt: -1 })
     .limit(limit)
-    .select('text createdAt updatedAt -_id')
+    .select('text createdAt updatedAt')
 
   return toolCallText(JSON.stringify({
     count: memories.length,
     memories: memories.map(m => ({
+      memoryId: m._id.toString(),
       text: m.text,
       createdAt: m.createdAt,
       updatedAt: m.updatedAt
