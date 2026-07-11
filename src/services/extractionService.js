@@ -1,6 +1,8 @@
 const { completeChat } = require('./groqService')
 const { parseJsonObject } = require('../utils/json')
 
+const MAX_MEMORY_TEXT_LENGTH = 500
+
 const MEMORY_TYPES = [
   'preference',
   'fact',
@@ -10,6 +12,14 @@ const MEMORY_TYPES = [
   'constraint',
   'bug',
   'other'
+]
+
+const TECHNICAL_MEMORY_TYPES = [
+  'project_context',
+  'task',
+  'constraint',
+  'bug',
+  'decision'
 ]
 
 const clampNumber = (value, min, max, fallback) => {
@@ -25,7 +35,7 @@ const clampNumber = (value, min, max, fallback) => {
 const normalizeMemory = (memory) => {
   const text = typeof memory.text === 'string' ? memory.text.trim() : ''
 
-  if (!text) {
+  if (!text || text.length > MAX_MEMORY_TEXT_LENGTH) {
     return null
   }
 
@@ -81,6 +91,65 @@ const buildExtractionMessages = ({ conversation, maxMemories }) => [
   }
 ]
 
+const buildReExtractionMessages = (oversized) => {
+  const technicalOversized = oversized.filter(m => TECHNICAL_MEMORY_TYPES.includes(m.type))
+  const nonTechnicalOversized = oversized.filter(m => !TECHNICAL_MEMORY_TYPES.includes(m.type))
+
+  const lines = [
+    'Compress each of these oversized memories to under 500 characters.',
+    '',
+    'For TECHNICAL memories (project_context, task, constraint, bug, decision): preserve specific details - file names, versions, error messages, URLs, and technical specifics.',
+    ...technicalOversized.map((m, i) => `T${i + 1}. [${m.type}] ${m.text}`),
+    '',
+    'For NON-TECHNICAL memories (preference, fact, other): aggressively compress to 1-2 sentences. Keep only the core fact.',
+    ...nonTechnicalOversized.map((m, i) => `N${i + 1}. [${m.type}] ${m.text}`),
+    '',
+    'Use this JSON shape exactly:',
+    '{',
+    '  "memories": [',
+    '    { "text": "compressed under 500 chars", "type": "...", "importance": 3, "confidence": 0.8, "reason": "why this was compressed" }',
+    '  ]',
+    '}',
+    '',
+    'Return only valid JSON. Do not include markdown.'
+  ]
+
+  return [
+    {
+      role: 'system',
+      content: [
+        'You re-extract oversized memories into concise, durable versions under 500 characters.',
+        'Preserve the essential information while removing filler. Return only valid JSON.'
+      ].join('\n')
+    },
+    {
+      role: 'user',
+      content: lines.join('\n')
+    }
+  ]
+}
+
+const reExtractOversized = async (oversized, chunkIndex) => {
+  const messages = buildReExtractionMessages(oversized)
+
+  const content = await completeChat(messages, {
+    temperature: 0,
+    maxTokens: 800
+  })
+
+  const parsed = parseJsonObject(content, 'Re-extraction')
+  const memories = Array.isArray(parsed.memories) ? parsed.memories : []
+
+  const normalized = memories
+    .map(normalizeMemory)
+    .filter(Boolean)
+
+  const chunkLabel = chunkIndex !== undefined ? `chunk ${chunkIndex + 1}` : 'chunk'
+  console.log(`[pipeline] Re-extracted ${oversized.length} oversized memories in ${chunkLabel}: ${normalized.length} survived`)
+
+  return normalized
+}
+
 const extractFromChunk = async ({ chunk, maxMemories, chunkIndex }) => {
   const messages = buildExtractionMessages({
     conversation: chunk,
@@ -95,10 +164,27 @@ const extractFromChunk = async ({ chunk, maxMemories, chunkIndex }) => {
   const parsed = parseJsonObject(content, 'Memory extraction')
   const memories = Array.isArray(parsed.memories) ? parsed.memories : []
 
-  const normalized = memories
-    .slice(0, maxMemories)
-    .map(normalizeMemory)
-    .filter(Boolean)
+  const rawMemories = memories.slice(0, maxMemories)
+  const normalized = []
+  const oversized = []
+
+  for (const raw of rawMemories) {
+    const norm = normalizeMemory(raw)
+    if (norm) {
+      normalized.push(norm)
+    } else if (typeof raw.text === 'string' && raw.text.trim().length > MAX_MEMORY_TEXT_LENGTH) {
+      oversized.push(raw)
+    }
+  }
+
+  if (oversized.length > 0) {
+    try {
+      const reExtracted = await reExtractOversized(oversized, chunkIndex)
+      normalized.push(...reExtracted)
+    } catch (error) {
+      console.error(`[pipeline] re-extraction failed for chunk ${(chunkIndex ?? 0) + 1}: ${error.message}`)
+    }
+  }
 
   if (chunkIndex !== undefined) {
     console.log(`[pipeline] Memories extracted from chunk ${chunkIndex + 1}: ${normalized.length}`)
