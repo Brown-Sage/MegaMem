@@ -8,4 +8,6 @@ const memorySchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 })
 
+memorySchema.index({ sessionId: 1, text: 1 })
+
 module.exports = mongoose.model('Memory', memorySchema)

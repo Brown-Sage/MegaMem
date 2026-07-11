@@ -115,6 +115,16 @@ const callMemorySave = async (args) => {
     )
   }
 
+  const existing = await Memory.findOne({ sessionId, text: text.trim() })
+  if (existing) {
+    return toolCallText(JSON.stringify({
+      action: 'skip',
+      memoryId: existing._id.toString(),
+      text: existing.text,
+      reason: 'Exact duplicate already exists.'
+    }))
+  }
+
   const decision = await detectMemoryConflict({
     memory: { text, confidence: 1, type: 'other' },
     sessionId
