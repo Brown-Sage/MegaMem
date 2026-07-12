@@ -1,3 +1,4 @@
+const mongoose = require('mongoose')
 const { retrieveMemory } = require('./retrieveService')
 const { saveMemory, updateMemory, applyMemoryDecision } = require('./memoryService')
 const { detectMemoryConflict } = require('./conflictService')
@@ -46,12 +47,13 @@ const MEMORY_TOOLS = [
   },
   {
     name: 'memory_list',
-    description: 'List all memories stored in a session, ordered by most recently updated.',
+    description: 'List memories stored in a session with cursor-based pagination, ordered by most recently created.',
     inputSchema: {
       type: 'object',
       properties: {
         sessionId: { type: 'string', description: 'Session identifier' },
-        limit: { type: 'number', description: 'Maximum number of memories to return (default 20)' }
+        limit: { type: 'number', description: 'Maximum number of memories to return (default 20)' },
+        cursor: { type: 'string', description: 'The memoryId from the last memory in the previous page. Omit for the first page.' }
       },
       required: ['sessionId']
     }
@@ -169,19 +171,35 @@ const callMemoryExtract = async (args) => {
 }
 
 const callMemoryList = async (args) => {
-  const { sessionId, limit = 20 } = args
+  const { sessionId, limit = 20, cursor } = args
 
   if (!sessionId) {
     throw new Error('memory_list requires sessionId')
   }
 
-  const memories = await Memory.find({ sessionId })
-    .sort({ updatedAt: -1 })
-    .limit(limit)
+  const filter = { sessionId }
+
+  if (cursor) {
+    try {
+      filter._id = { $lt: new mongoose.Types.ObjectId(cursor) }
+    } catch {
+      throw new Error(`Invalid cursor: "${cursor}" is not a valid ObjectId`)
+    }
+  }
+
+  const memories = await Memory.find(filter)
+    .sort({ _id: -1 })
+    .limit(limit + 1)
     .select('text createdAt updatedAt')
+
+  const hasMore = memories.length > limit
+  if (hasMore) memories.pop()
+
+  const nextCursor = hasMore ? memories[memories.length - 1]._id.toString() : null
 
   return toolCallText(JSON.stringify({
     count: memories.length,
+    nextCursor,
     memories: memories.map(m => ({
       memoryId: m._id.toString(),
       text: m.text,
