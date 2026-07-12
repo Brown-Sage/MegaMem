@@ -26,29 +26,87 @@ const groqRelease = () => {
 }
 // --- end semaphore ---
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 503])
+const RETRYABLE_NETWORK_CODES = new Set([
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'ENOTFOUND',
+  'ECONNREFUSED',
+  'EPIPE',
+  'EAI_AGAIN'
+])
+
+const isRetryableError = (err) => {
+  // Client timeout (our own timer) is not retryable
+  if (err.message && err.message.includes('Groq API timeout')) {
+    return false
+  }
+
+  // SDK errors with a status code
+  if (err.status) {
+    return RETRYABLE_STATUS_CODES.has(err.status)
+  }
+
+  // Network errors
+  if (err.code && RETRYABLE_NETWORK_CODES.has(err.code)) {
+    return true
+  }
+
+  // Network errors detected by message (socket hang up etc.)
+  if (err.message && /socket hang up|ECONNRESET|ETIMEDOUT|ENOTFOUND/i.test(err.message)) {
+    return true
+  }
+
+  return false
+}
+
 const chat = async (prompt) => {
   return completeChat([{ role: 'user', content: prompt }])
 }
 
-const completeChat = async (messages, options = {}) => {
-  await groqAcquire()
-  try {
-    const response = await Promise.race([
-      groq.chat.completions.create({
-        model: options.model || 'llama-3.3-70b-versatile',
-        messages,
-        max_tokens: options.maxTokens || 1000,
-        temperature: options.temperature ?? 0.3
-      }),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Groq API timeout after 30 seconds')), 30000)
-      )
-    ])
+const RETRY_BACKOFF = [1000, 2000]
 
-    return response.choices[0].message.content
-  } finally {
-    groqRelease()
+const completeChat = async (messages, options = {}) => {
+  const maxRetries = options.maxRetries ?? 2
+  const timeoutMs = options.timeoutMs ?? 10000
+  let lastError
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    await groqAcquire()
+    try {
+      const response = await Promise.race([
+        groq.chat.completions.create({
+          model: options.model || 'llama-3.3-70b-versatile',
+          messages,
+          max_tokens: options.maxTokens || 1000,
+          temperature: options.temperature ?? 0.3
+        }),
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error('Groq API timeout after ' + timeoutMs / 1000 + 's')),
+            timeoutMs
+          )
+        )
+      ])
+
+      return response.choices[0].message.content
+    } catch (err) {
+      lastError = err
+      if (!isRetryableError(err) || attempt === maxRetries) throw err
+      console.error(
+        '[groq] attempt ' + (attempt + 1) + '/' + (maxRetries + 1) + ' failed, retrying: ' + err.message
+      )
+    } finally {
+      groqRelease()
+    }
+
+    // backoff OUTSIDE semaphore — release happens in finally, sleep happens here
+    await sleep(RETRY_BACKOFF[attempt])
   }
+
+  throw lastError
 }
 
-module.exports = { chat, completeChat }
+module.exports = { chat, completeChat, isRetryableError }
