@@ -6,6 +6,7 @@ const { persistExtractedMemories } = require('./memoryChatService')
 const Memory = require('../models/Memory')
 
 const MEMORY_SAVE_MAX_CHARS = 2000
+const MEMORY_EXTRACT_MAX_CHARS = 50000
 
 const MEMORY_TOOLS = [
   {
@@ -151,6 +152,10 @@ const callMemoryExtract = async (args) => {
 
   if (!text || !sessionId) {
     throw new Error('memory_extract requires text and sessionId')
+  }
+
+  if (text.length > MEMORY_EXTRACT_MAX_CHARS) {
+    throw new Error(`memory_extract input is ${text.length} chars, exceeds ${MEMORY_EXTRACT_MAX_CHARS} char limit. Please split your input into smaller pieces or summarize before extracting.`)
   }
 
   const results = await persistExtractedMemories({
