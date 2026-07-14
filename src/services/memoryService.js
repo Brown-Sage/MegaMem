@@ -5,7 +5,7 @@ const saveMemory = async (text, sessionId) => {
   const embedding = await embedText(text)
   const memory = new Memory({ sessionId, text, embedding })
   await memory.save()
-  console.log('memory saved:', text)
+  console.error('memory saved:', text)
   return memory
 }
 
@@ -26,7 +26,7 @@ const updateMemory = async (memoryId, text) => {
     throw new Error(`Memory not found for update: ${memoryId}`)
   }
 
-  console.log('memory updated:', text)
+  console.error('memory updated:', text)
   return memory
 }
 

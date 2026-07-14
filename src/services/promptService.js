@@ -41,7 +41,7 @@ const buildPrompt = ({ query, memories = [], model = 'llama-3.3-70b-versatile' }
   const result = fitMessagesToContext({ messages, model })
 
   if (result.droppedMemoryCount > 0) {
-    console.log(`prompt: trimmed ${result.droppedMemoryCount} memory/memories to fit ${model} context`)
+    console.error(`prompt: trimmed ${result.droppedMemoryCount} memory/memories to fit ${model} context`)
   }
 
   return result.messages

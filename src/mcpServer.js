@@ -1,4 +1,4 @@
-require('dotenv').config()
+require('dotenv').config({ quiet: true })
 const connectDB = require('./config/db')
 const { handleJsonRpc } = require('./services/mcpToolService')
 const readline = require('readline')

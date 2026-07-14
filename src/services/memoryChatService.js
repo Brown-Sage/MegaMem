@@ -15,12 +15,12 @@ const formatConversation = ({ query, answer }) => [
 
 const persistExtractedMemories = async ({ conversation, sessionId }) => {
   const chunks = dedupeChunks(chunkText(conversation))
-  console.log(`[pipeline] Chunks created: ${chunks.length}`)
-  chunks.forEach((c, i) => console.log(`[pipeline]   Chunk ${i + 1} length: ${c.length} chars`))
+  console.error(`[pipeline] Chunks created: ${chunks.length}`)
+  chunks.forEach((c, i) => console.error(`[pipeline]   Chunk ${i + 1} length: ${c.length} chars`))
 
   const extracted = await extractMemories({ conversation, chunks })
-  console.log(`[pipeline] Final merged memories: ${extracted.length}`)
-  extracted.forEach((m, i) => console.log(`[pipeline]   ${i + 1}. [${m.type}] (conf=${m.confidence}) ${m.text}`))
+  console.error(`[pipeline] Final merged memories: ${extracted.length}`)
+  extracted.forEach((m, i) => console.error(`[pipeline]   ${i + 1}. [${m.type}] (conf=${m.confidence}) ${m.text}`))
 
   const results = []
 
@@ -76,7 +76,7 @@ const chatWithMemory = async ({ query, sessionId, topK = 5 }) => {
     .then(results => {
       const saved = results.filter(r => r.action === 'create' || r.action === 'update')
       if (saved.length > 0) {
-        console.log(`auto-memory: ${saved.length} saved for session ${sessionId}`)
+        console.error(`auto-memory: ${saved.length} saved for session ${sessionId}`)
       }
     })
     .catch(error => {

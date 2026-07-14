@@ -145,7 +145,7 @@ const reExtractOversized = async (oversized, chunkIndex) => {
     .filter(Boolean)
 
   const chunkLabel = chunkIndex !== undefined ? `chunk ${chunkIndex + 1}` : 'chunk'
-  console.log(`[pipeline] Re-extracted ${oversized.length} oversized memories in ${chunkLabel}: ${normalized.length} survived`)
+  console.error(`[pipeline] Re-extracted ${oversized.length} oversized memories in ${chunkLabel}: ${normalized.length} survived`)
 
   return normalized
 }
@@ -187,8 +187,8 @@ const extractFromChunk = async ({ chunk, maxMemories, chunkIndex }) => {
   }
 
   if (chunkIndex !== undefined) {
-    console.log(`[pipeline] Memories extracted from chunk ${chunkIndex + 1}: ${normalized.length}`)
-    normalized.forEach((m, i) => console.log(`[pipeline]   ${i + 1}. [${m.type}] (conf=${m.confidence}) ${m.text}`))
+    console.error(`[pipeline] Memories extracted from chunk ${chunkIndex + 1}: ${normalized.length}`)
+    normalized.forEach((m, i) => console.error(`[pipeline]   ${i + 1}. [${m.type}] (conf=${m.confidence}) ${m.text}`))
   }
 
   return normalized
