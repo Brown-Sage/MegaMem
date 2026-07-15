@@ -11,57 +11,57 @@ const MEMORY_EXTRACT_MAX_CHARS = 50000
 const MEMORY_TOOLS = [
   {
     name: 'memory_search',
-    description: 'Search stored memories for a session using semantic similarity. Returns the top matching memories with relevance scores.',
+    description: 'Search stored memories using semantic similarity. Returns the top matching memories with relevance scores.\n\nWHEN TO USE: Search memory when the user references a preference, past decision, personal detail, or something that sounds like it depends on prior conversation. Do not search for purely technical questions, math calculations, or one-off requests unrelated to personal context.\n\nsessionId: optional, defaults to "aryan-main".',
     inputSchema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'What to search for' },
-        sessionId: { type: 'string', description: 'Session identifier to scope the search' },
+        sessionId: { type: 'string', description: 'Session identifier (optional, defaults to "aryan-main")' },
         topK: { type: 'number', description: 'How many memories to return (default 5)' }
       },
-      required: ['query', 'sessionId']
+      required: ['query']
     }
   },
   {
     name: 'memory_save',
-    description: 'Save a single concise fact to a session. Runs conflict detection: if a similar memory exists, returns a decision (create/update/ignore). Rejects inputs longer than 2000 characters — use memory_extract for long text.',
+    description: 'Save a single concise fact to memory. Runs conflict detection: if a similar memory exists, returns a decision (create/update/ignore). Rejects inputs longer than 2000 characters — use memory_extract for long text.\n\nWHEN TO USE: Proactively save memories whenever the user states a preference, makes a decision, shares a personal fact, mentions a constraint, names a tool or stack they use, or provides any information that would be useful to remember in future conversations. Save automatically without asking for permission first — but the tool call itself should be visible to the user as normal (don\'t suppress or hide the invocation).\n\nsessionId: optional, defaults to "aryan-main".',
     inputSchema: {
       type: 'object',
       properties: {
         text: { type: 'string', description: 'The memory text to save (must be a single concise fact, max 2000 chars)' },
-        sessionId: { type: 'string', description: 'Session identifier' }
+        sessionId: { type: 'string', description: 'Session identifier (optional, defaults to "aryan-main")' }
       },
-      required: ['text', 'sessionId']
+      required: ['text']
     }
   },
   {
     name: 'memory_extract',
-    description: 'Run the full auto-memory pipeline on a long conversation or document. Chunks the input, runs extraction LLM on each chunk, dedupes facts, runs conflict detection on each fact, and persists the results. Returns the actions taken.',
+    description: 'Run the full auto-memory pipeline on a long conversation or document. Chunks the input, runs extraction LLM on each chunk, deduplicates facts, runs conflict detection on each fact, and persists the results. Returns actions taken.\n\nWHEN TO USE: Use this INSTEAD of memory_save when you have a long block of text (a conversation transcript, meeting notes, a document) from which multiple facts should be extracted. memory_save is for a single fact; memory_extract is for bulk extraction from rich text.\n\nsessionId: optional, defaults to "aryan-main".',
     inputSchema: {
       type: 'object',
       properties: {
         text: { type: 'string', description: 'The conversation or document text to extract memories from' },
-        sessionId: { type: 'string', description: 'Session identifier' }
+        sessionId: { type: 'string', description: 'Session identifier (optional, defaults to "aryan-main")' }
       },
-      required: ['text', 'sessionId']
+      required: ['text']
     }
   },
   {
     name: 'memory_list',
-    description: 'List memories stored in a session with cursor-based pagination, ordered by most recently created.',
+    description: 'List memories with cursor-based pagination, ordered by most recently created.\n\nWHEN TO USE: Use when you need to browse all stored memories, review what\'s been saved, or help the user manage their memory store.\n\nsessionId: optional, defaults to "aryan-main".',
     inputSchema: {
       type: 'object',
       properties: {
-        sessionId: { type: 'string', description: 'Session identifier' },
+        sessionId: { type: 'string', description: 'Session identifier (optional, defaults to "aryan-main")' },
         limit: { type: 'number', description: 'Maximum number of memories to return (default 20)' },
         cursor: { type: 'string', description: 'The memoryId from the last memory in the previous page. Omit for the first page.' }
       },
-      required: ['sessionId']
+      required: []
     }
   },
   {
     name: 'memory_delete',
-    description: 'Delete a single memory by its ID. Returns confirmation.',
+    description: 'Delete a single memory by its ID. Returns confirmation.\n\nWHEN TO USE: Use when the user asks to remove a specific memory, or when you identify an outdated/incorrect memory that should be cleaned up.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -91,10 +91,11 @@ const toolCallText = (text) => ({ content: [{ type: 'text', text }] })
 const toolCallError = (message) => ({ content: [{ type: 'text', text: `Error: ${message}` }], isError: true })
 
 const callMemorySearch = async (args) => {
-  const { query, sessionId, topK = 5 } = args
+  const { query, topK = 5 } = args
+  const sessionId = args.sessionId || 'aryan-main'
 
-  if (!query || !sessionId) {
-    throw new Error('memory_search requires query and sessionId')
+  if (!query) {
+    throw new Error('memory_search requires query')
   }
 
   const memories = await retrieveMemory(query, sessionId, topK)
@@ -105,10 +106,11 @@ const callMemorySearch = async (args) => {
 }
 
 const callMemorySave = async (args) => {
-  const { text, sessionId } = args
+  const { text } = args
+  const sessionId = args.sessionId || 'aryan-main'
 
-  if (!text || !sessionId) {
-    throw new Error('memory_save requires text and sessionId')
+  if (!text) {
+    throw new Error('memory_save requires text')
   }
 
   if (text.length > MEMORY_SAVE_MAX_CHARS) {
@@ -148,10 +150,11 @@ const callMemorySave = async (args) => {
 }
 
 const callMemoryExtract = async (args) => {
-  const { text, sessionId } = args
+  const { text } = args
+  const sessionId = args.sessionId || 'aryan-main'
 
-  if (!text || !sessionId) {
-    throw new Error('memory_extract requires text and sessionId')
+  if (!text) {
+    throw new Error('memory_extract requires text')
   }
 
   if (text.length > MEMORY_EXTRACT_MAX_CHARS) {
@@ -176,11 +179,8 @@ const callMemoryExtract = async (args) => {
 }
 
 const callMemoryList = async (args) => {
-  const { sessionId, limit = 20, cursor } = args
-
-  if (!sessionId) {
-    throw new Error('memory_list requires sessionId')
-  }
+  const { limit = 20, cursor } = args
+  const sessionId = args.sessionId || 'aryan-main'
 
   const filter = { sessionId }
 
