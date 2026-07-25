@@ -8,6 +8,13 @@ const Memory = require('../models/Memory')
 const MEMORY_SAVE_MAX_CHARS = 2000
 const MEMORY_EXTRACT_MAX_CHARS = 50000
 
+const SERVER_INSTRUCTIONS = `You have persistent memory across conversations via MegaMem's memory tools. Use it proactively, without waiting for the user to ask:
+- BEFORE answering: call memory_search whenever the user references a preference, past decision, personal detail, project context, or anything that sounds like prior conversation.
+- IMMEDIATELY: call memory_save whenever the user states a preference, makes a decision, shares a personal fact, mentions a constraint, or names tools/stack they use. Do not ask for permission first — just save.
+- Use memory_extract instead of memory_save for bulk extraction from long text (transcripts, documents, meeting notes).
+- Use memory_list to review what is stored and memory_delete to clean up outdated memories.
+All tools default to the correct session automatically — no sessionId needed.`
+
 const MEMORY_TOOLS = [
   {
     name: 'memory_search',
