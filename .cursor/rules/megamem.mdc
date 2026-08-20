@@ -7,7 +7,7 @@ You have access to MegaMem MCP tools for persistent memory across coding session
 
 ## Tools
 
-- `memory_search` — search before answering anything that references prior work, preferences, decisions, or project context
+- `memory_search` — search before answering anything that references prior work, preferences, decisions, or project context. Returns `count: 0` when nothing passes the relevance threshold.
 - `memory_save` — save a single preference, decision, constraint, or fact
 - `memory_extract` — extract many memories from a long transcript or document
 - `memory_list` — browse stored memories

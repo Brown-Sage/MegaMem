@@ -1,7 +1,13 @@
 const Memory = require('../models/Memory')
 const { embedText } = require('./embedService')
 
-const retrieveMemory = async (query, sessionId, topK = 5) => {
+// Atlas $vectorSearchScore for cosine similarity is 0..1 (0.5 = orthogonal).
+// Empirically, genuine matches land around 0.64+ and noise around 0.57.
+const DEFAULT_MIN_SCORE = process.env.MEGAMEM_MIN_SCORE
+  ? Number(process.env.MEGAMEM_MIN_SCORE)
+  : 0.6
+
+const retrieveMemory = async (query, sessionId, topK = 5, minScore = DEFAULT_MIN_SCORE) => {
   const queryEmbedding = await embedText(query)
 
   const results = await Memory.aggregate([
@@ -24,7 +30,7 @@ const retrieveMemory = async (query, sessionId, topK = 5) => {
     }
   ])
 
-  return results
+  return results.filter((memory) => memory.score >= minScore)
 }
 
-module.exports = { retrieveMemory }
+module.exports = { retrieveMemory, DEFAULT_MIN_SCORE }

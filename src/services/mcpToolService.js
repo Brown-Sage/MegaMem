@@ -121,6 +121,13 @@ const callMemorySearch = async (args) => {
   }
 
   const memories = await retrieveMemory(query, sessionId, topK)
+  if (memories.length === 0) {
+    return toolCallText(JSON.stringify({
+      count: 0,
+      memories: [],
+      note: 'No memories passed the relevance threshold.'
+    }, null, 2))
+  }
   return toolCallText(JSON.stringify({
     count: memories.length,
     memories: memories.map(m => ({ text: m.text, score: m.score }))
