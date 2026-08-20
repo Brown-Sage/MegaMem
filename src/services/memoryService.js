@@ -1,11 +1,12 @@
 const Memory = require('../models/Memory')
 const { embedText } = require('./embedService')
+const { log } = require('../utils/log')
 
 const saveMemory = async (text, sessionId) => {
   const embedding = await embedText(text)
   const memory = new Memory({ sessionId, text, embedding })
   await memory.save()
-  console.error('memory saved:', text)
+  log('memory saved:', text)
   return memory
 }
 
@@ -26,7 +27,7 @@ const updateMemory = async (memoryId, text) => {
     throw new Error(`Memory not found for update: ${memoryId}`)
   }
 
-  console.error('memory updated:', text)
+  log('memory updated:', text)
   return memory
 }
 

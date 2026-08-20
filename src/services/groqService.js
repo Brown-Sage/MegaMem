@@ -62,6 +62,24 @@ const isRetryableError = (err) => {
   return false
 }
 
+const extractRetryAfter = (err) => {
+  // Groq SDK exposes retry-after on the error as a seconds value or header.
+  const raw = err?.retryAfterMs || err?.headers?.['retry-after'] || err?.response?.headers?.get?.('retry-after')
+  if (raw) {
+    const seconds = Number(raw)
+    if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000
+  }
+
+  // Fallback: parse "Please try again in 13.76s" from the error message.
+  const match = /try again in ([0-9.]+)s/i.exec(err?.message || '')
+  if (match) {
+    const seconds = parseFloat(match[1])
+    if (Number.isFinite(seconds) && seconds > 0) return Math.ceil(seconds * 1000)
+  }
+
+  return null
+}
+
 const chat = async (prompt) => {
   return completeChat([{ role: 'user', content: prompt }])
 }
@@ -102,8 +120,10 @@ const completeChat = async (messages, options = {}) => {
       groqRelease()
     }
 
-    // backoff OUTSIDE semaphore — release happens in finally, sleep happens here
-    await sleep(RETRY_BACKOFF[attempt])
+    // backoff OUTSIDE semaphore — release happens in finally, sleep happens here.
+    // Respect the server's Retry-After when present.
+    const retryAfter = extractRetryAfter(lastError)
+    await sleep(retryAfter ?? RETRY_BACKOFF[attempt] ?? 2000)
   }
 
   throw lastError

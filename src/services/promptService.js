@@ -1,4 +1,5 @@
 const { fitMessagesToContext } = require('../utils/tokenGuard')
+const { log } = require('../utils/log')
 
 const formatMemories = (memories = []) => {
   if (memories.length === 0) {
@@ -41,7 +42,7 @@ const buildPrompt = ({ query, memories = [], model = 'llama-3.3-70b-versatile' }
   const result = fitMessagesToContext({ messages, model })
 
   if (result.droppedMemoryCount > 0) {
-    console.error(`prompt: trimmed ${result.droppedMemoryCount} memory/memories to fit ${model} context`)
+    log(`prompt: trimmed ${result.droppedMemoryCount} memory/memories to fit ${model} context`)
   }
 
   return result.messages
