@@ -3,6 +3,7 @@ const { retrieveMemory } = require('./retrieveService')
 const { saveMemory, updateMemory, applyMemoryDecision } = require('./memoryService')
 const { detectMemoryConflict } = require('./conflictService')
 const { persistExtractedMemories } = require('./memoryChatService')
+const { getProfile } = require('./profileService')
 const { validate, toolArgsSchema } = require('../validation/schemas')
 const { resolveSessionId } = require('../utils/sessionId')
 const Memory = require('../models/Memory')
@@ -77,6 +78,18 @@ const MEMORY_TOOLS = [
         memoryId: { type: 'string', description: 'The Mongo _id of the memory to delete' }
       },
       required: ['memoryId']
+    }
+  },
+  {
+    name: 'memory_profile',
+    description: 'Get a compiled summary of the current user profile: identity, preferences, stack, conventions, and constraints. Returns null if there are not enough memories yet.\n\nWHEN TO USE: Use at session start or when the user asks "what do you know about me". Pass refresh=true to force recompilation from the latest memories.\n\nsessionId: optional, defaults to the current workspace automatically.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sessionId: { type: 'string', description: 'Session identifier (optional, defaults to the current workspace)' },
+        refresh: { type: 'boolean', description: 'Force recompile from latest memories (default false)' }
+      },
+      required: []
     }
   }
 ]
@@ -239,12 +252,26 @@ const callMemoryDelete = async (args) => {
   return toolCallText(JSON.stringify({ deleted: true, memoryId, text: result.text }, null, 2))
 }
 
+const callMemoryProfile = async (args) => {
+  const { refresh = false } = args
+  const sessionId = resolveSessionId(args.sessionId)
+
+  const profile = await getProfile(sessionId, { force: refresh })
+
+  if (!profile) {
+    return toolCallText(JSON.stringify({ profile: null, reason: 'Not enough memories yet to compile a profile.' }, null, 2))
+  }
+
+  return toolCallText(JSON.stringify({ profile }, null, 2))
+}
+
 const TOOL_HANDLERS = {
   memory_search: callMemorySearch,
   memory_save: callMemorySave,
   memory_extract: callMemoryExtract,
   memory_list: callMemoryList,
-  memory_delete: callMemoryDelete
+  memory_delete: callMemoryDelete,
+  memory_profile: callMemoryProfile
 }
 
 const handleToolsCall = async (id, params) => {

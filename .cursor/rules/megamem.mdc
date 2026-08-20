@@ -12,6 +12,7 @@ You have access to MegaMem MCP tools for persistent memory across coding session
 - `memory_extract` — extract many memories from a long transcript or document
 - `memory_list` — browse stored memories
 - `memory_delete` — remove an outdated or wrong memory
+- `memory_profile` — get a compiled summary of the user's identity, preferences, and stack
 
 ## When to use them
 

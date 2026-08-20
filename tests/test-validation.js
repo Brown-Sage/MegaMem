@@ -111,3 +111,15 @@ expectOk(
   validate(toolArgsSchema.memory_delete, { memoryId: 'a'.repeat(24) }),
   'memory_delete valid'
 )
+expectOk(
+  validate(toolArgsSchema.memory_profile, {}),
+  'memory_profile empty args valid'
+)
+expectOk(
+  validate(toolArgsSchema.memory_profile, { sessionId: 'abc', refresh: true }),
+  'memory_profile with sessionId and refresh'
+)
+expectError(
+  validate(toolArgsSchema.memory_profile, { refresh: 'yes' }),
+  'memory_profile non-boolean refresh rejected'
+)

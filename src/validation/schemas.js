@@ -64,6 +64,11 @@ const toolArgsSchema = {
 
   memory_delete: z.object({
     memoryId: memoryIdSchema
+  }).strict(),
+
+  memory_profile: z.object({
+    sessionId: sessionIdSchema.optional(),
+    refresh: z.boolean().optional()
   }).strict()
 }
 
