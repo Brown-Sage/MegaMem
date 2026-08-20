@@ -1,6 +1,10 @@
 const CHARS_PER_TOKEN = 4
 
 const DEFAULT_MODEL_CONTEXT_TOKENS = {
+  'openai/gpt-oss-20b': 128000,
+  'openai/gpt-oss-120b': 128000,
+  'qwen/qwen3.6-27b': 128000,
+  'allam-2-7b': 128000,
   'llama-3.3-70b-versatile': 128000,
   'llama-3.1-70b-versatile': 128000,
   'llama-3.1-8b-instant': 128000,

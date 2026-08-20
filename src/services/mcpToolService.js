@@ -1,27 +1,11 @@
-const path = require('path')
-const crypto = require('crypto')
 const mongoose = require('mongoose')
 const { retrieveMemory } = require('./retrieveService')
 const { saveMemory, updateMemory, applyMemoryDecision } = require('./memoryService')
 const { detectMemoryConflict } = require('./conflictService')
 const { persistExtractedMemories } = require('./memoryChatService')
 const { validate, toolArgsSchema } = require('../validation/schemas')
+const { resolveSessionId } = require('../utils/sessionId')
 const Memory = require('../models/Memory')
-
-const DEFAULT_SESSION_ID = 'aryan-main'
-
-const workspaceSessionId = () => {
-  const cwd = process.cwd()
-  const base = path.basename(cwd)
-  const hash = crypto.createHash('sha1').update(cwd).digest('hex').slice(0, 8)
-  return `${base}-${hash}`
-}
-
-const resolveSessionId = (explicit) => {
-  if (explicit) return explicit
-  if (process.env.MEGAMEM_SESSION_ID) return process.env.MEGAMEM_SESSION_ID
-  return workspaceSessionId() || DEFAULT_SESSION_ID
-}
 
 const MEMORY_SAVE_MAX_CHARS = 2000
 const MEMORY_EXTRACT_MAX_CHARS = 50000

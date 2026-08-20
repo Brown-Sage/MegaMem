@@ -1,5 +1,6 @@
 const { fitMessagesToContext } = require('../utils/tokenGuard')
 const { log } = require('../utils/log')
+const { DEFAULT_MODEL } = require('./groqService')
 
 const formatMemories = (memories = []) => {
   if (memories.length === 0) {
@@ -17,7 +18,7 @@ const formatMemories = (memories = []) => {
     .join('\n')
 }
 
-const buildPrompt = ({ query, memories = [], model = 'llama-3.3-70b-versatile' }) => {
+const buildPrompt = ({ query, memories = [], model = DEFAULT_MODEL }) => {
   const memoryBlock = formatMemories(memories)
 
   const messages = [

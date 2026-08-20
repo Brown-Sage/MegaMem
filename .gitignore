@@ -32,3 +32,6 @@ dist-ssr/
 AGENTS.md
 benchmarks/
 
+# Cursor local MCP config (contains machine-specific absolute paths)
+.cursor/mcp.json
+

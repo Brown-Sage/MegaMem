@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "node .cursor/hooks/session-start.js",
+        "timeout": 20
+      }
+    ],
+    "sessionEnd": [
+      {
+        "command": "node .cursor/hooks/session-end.js",
+        "timeout": 30
+      }
+    ]
+  }
+}

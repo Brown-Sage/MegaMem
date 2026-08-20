@@ -1,6 +1,10 @@
 const Groq = require('groq-sdk')
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY })
 
+// llama-3.3-70b-versatile was retired by Groq. openai/gpt-oss-20b returns
+// clean JSON without reasoning-token leakage, so it is the default.
+const DEFAULT_MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-20b'
+
 // --- Groq concurrency limiter (semaphore) ---
 const MAX_CONCURRENT_GROQ = 3
 let groqRunning = 0
@@ -96,7 +100,7 @@ const completeChat = async (messages, options = {}) => {
     try {
       const response = await Promise.race([
         groq.chat.completions.create({
-          model: options.model || 'llama-3.3-70b-versatile',
+          model: options.model || DEFAULT_MODEL,
           messages,
           max_tokens: options.maxTokens || 1000,
           temperature: options.temperature ?? 0.3
@@ -129,4 +133,4 @@ const completeChat = async (messages, options = {}) => {
   throw lastError
 }
 
-module.exports = { chat, completeChat, isRetryableError }
+module.exports = { chat, completeChat, isRetryableError, DEFAULT_MODEL }

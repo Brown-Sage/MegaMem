@@ -1,0 +1,24 @@
+---
+description: MegaMem persistent memory tools — use them proactively
+alwaysApply: true
+---
+
+You have access to MegaMem MCP tools for persistent memory across coding sessions.
+
+## Tools
+
+- `memory_search` — search before answering anything that references prior work, preferences, decisions, or project context
+- `memory_save` — save a single preference, decision, constraint, or fact
+- `memory_extract` — extract many memories from a long transcript or document
+- `memory_list` — browse stored memories
+- `memory_delete` — remove an outdated or wrong memory
+
+## When to use them
+
+- User mentions "last time", "we decided", "my preference", "our stack" → search first
+- User states a preference, decision, or constraint → save immediately, without asking permission
+- After solving a hard bug → save the root cause and fix
+- After discovering a project convention or architecture decision → save it
+- User says "remember" / "don't forget" → save immediately
+
+The current workspace is selected automatically. Do not pass `sessionId` unless the user explicitly asks for a different scope.
