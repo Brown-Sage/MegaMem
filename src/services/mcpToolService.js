@@ -5,6 +5,7 @@ const { retrieveMemory } = require('./retrieveService')
 const { saveMemory, updateMemory, applyMemoryDecision } = require('./memoryService')
 const { detectMemoryConflict } = require('./conflictService')
 const { persistExtractedMemories } = require('./memoryChatService')
+const { validate, toolArgsSchema } = require('../validation/schemas')
 const Memory = require('../models/Memory')
 
 const DEFAULT_SESSION_ID = 'aryan-main'
@@ -263,7 +264,7 @@ const TOOL_HANDLERS = {
 }
 
 const handleToolsCall = async (id, params) => {
-  const { name, arguments: args = {} } = params || {}
+  let { name, arguments: args = {} } = params || {}
 
   if (!name) {
     return jsonRpcError(id, -32602, 'Invalid params: missing tool name')
@@ -273,6 +274,15 @@ const handleToolsCall = async (id, params) => {
 
   if (!handler) {
     return jsonRpcError(id, -32601, `Unknown tool: ${name}`)
+  }
+
+  const schema = toolArgsSchema[name]
+  if (schema) {
+    const parsed = validate(schema, args)
+    if (!parsed.ok) {
+      return jsonRpcError(id, -32602, 'Invalid tool arguments', parsed.errors)
+    }
+    args = parsed.data
   }
 
   try {

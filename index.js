@@ -4,6 +4,7 @@ const crypto = require('crypto')
 const connectDB = require('./src/config/db')
 const { chatWithMemory } = require('./src/services/memoryChatService')
 const { handleJsonRpc, MEMORY_TOOLS } = require('./src/services/mcpToolService')
+const { validate, chatBodySchema } = require('./src/validation/schemas')
 
 const app = express()
 app.use(express.json())
@@ -20,12 +21,13 @@ app.get('/', (req, res) => {
 
 app.post('/chat', async (req, res) => {
   try {
-    const { query, sessionId, topK } = req.body || {}
+    const parsed = validate(chatBodySchema, req.body)
 
-    if (!query || !sessionId) {
-      return res.status(400).json({ error: 'query and sessionId are required' })
+    if (!parsed.ok) {
+      return res.status(400).json({ errors: parsed.errors })
     }
 
+    const { query, sessionId, topK } = parsed.data
     const result = await chatWithMemory({ query, sessionId, topK })
     res.json(result)
   } catch (error) {
