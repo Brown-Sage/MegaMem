@@ -1,8 +1,10 @@
 const mongoose = require('mongoose')
+const { MEMORY_TYPES } = require('../constants/memoryTypes')
 
 const memorySchema = new mongoose.Schema({
   sessionId: { type: String, required: true, default: 'aryan-main' },
   text: { type: String, required: true },
+  type: { type: String, enum: MEMORY_TYPES, default: 'other' },
   embedding: { type: [Number], required: true },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }

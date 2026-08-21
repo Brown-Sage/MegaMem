@@ -1,26 +1,8 @@
 const { completeChat } = require('./groqService')
 const { parseJsonObject } = require('../utils/json')
+const { MEMORY_TYPES, TECHNICAL_MEMORY_TYPES } = require('../constants/memoryTypes')
 
 const MAX_MEMORY_TEXT_LENGTH = 500
-
-const MEMORY_TYPES = [
-  'preference',
-  'fact',
-  'decision',
-  'task',
-  'project_context',
-  'constraint',
-  'bug',
-  'other'
-]
-
-const TECHNICAL_MEMORY_TYPES = [
-  'project_context',
-  'task',
-  'constraint',
-  'bug',
-  'decision'
-]
 
 const clampNumber = (value, min, max, fallback) => {
   const number = Number(value)
@@ -248,5 +230,6 @@ const extractMemories = async ({ conversation, maxMemories = 5, chunks }) => {
 module.exports = {
   extractMemories,
   buildExtractionMessages,
-  MEMORY_TYPES
+  MEMORY_TYPES,
+  TECHNICAL_MEMORY_TYPES
 }

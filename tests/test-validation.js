@@ -72,9 +72,21 @@ expectOk(
   validate(toolArgsSchema.memory_save, { text: 'likes coffee' }),
   'memory_save valid'
 )
+expectOk(
+  validate(toolArgsSchema.memory_save, { text: 'use Node stdio', type: 'decision', scope: 'workspace' }),
+  'memory_save with type and scope'
+)
 expectError(
   validate(toolArgsSchema.memory_save, { text: 'x'.repeat(2001) }),
   'memory_save text too long'
+)
+expectError(
+  validate(toolArgsSchema.memory_save, { text: 'likes coffee', type: 'invalid' }),
+  'memory_save invalid type rejected'
+)
+expectError(
+  validate(toolArgsSchema.memory_extract, { text: 'doc', scope: 'global' }),
+  'memory_extract invalid scope rejected'
 )
 
 expectOk(

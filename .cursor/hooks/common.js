@@ -1,11 +1,9 @@
-const path = require('path')
-const { resolveSessionId } = require('../../src/utils/sessionId')
+const { resolveSessionIds } = require('../../src/utils/sessionId')
 
-// Hooks run with CWD = project root. Derive the same sessionId the MCP tools
-// use, so hook-injected context and MCP tool calls share one memory store.
-const sessionIdForWorkspace = (workspaceRoots) => {
-  const cwd = (workspaceRoots && workspaceRoots[0]) || process.cwd()
-  return resolveSessionId(undefined, cwd)
+const cwdFromRoots = (workspaceRoots) => (workspaceRoots && workspaceRoots[0]) || process.cwd()
+
+const sessionLayersForWorkspace = (workspaceRoots) => {
+  return resolveSessionIds(undefined, cwdFromRoots(workspaceRoots))
 }
 
-module.exports = { sessionIdForWorkspace }
+module.exports = { sessionLayersForWorkspace }

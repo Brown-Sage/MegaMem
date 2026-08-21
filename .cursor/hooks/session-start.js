@@ -1,11 +1,9 @@
-const { sessionIdForWorkspace } = require('./common')
+const { sessionLayersForWorkspace } = require('./common')
 const connectDB = require('../../src/config/db')
 const mongoose = require('mongoose')
 const { retrieveMemory } = require('../../src/services/retrieveService')
 const { getProfile } = require('../../src/services/profileService')
 
-// Reads hook JSON from stdin and injects the compiled profile plus recent
-// context at session start via `additional_context`.
 const main = async () => {
   let input = ''
   for await (const chunk of process.stdin) input += chunk
@@ -13,14 +11,15 @@ const main = async () => {
   let payload = {}
   try { payload = JSON.parse(input || '{}') } catch { /* ignore */ }
 
-  const sessionId = sessionIdForWorkspace(payload.workspace_roots)
+  const layers = sessionLayersForWorkspace(payload.workspace_roots)
 
   try {
     await connectDB()
 
-    const [profile, memories] = await Promise.all([
-      getProfile(sessionId).catch(() => null),
-      retrieveMemory('important preferences and project context', sessionId, 5).catch(() => [])
+    const [profile, workspaceProfile, memories] = await Promise.all([
+      getProfile(layers.userId).catch(() => null),
+      getProfile(layers.workspaceId).catch(() => null),
+      retrieveMemory('important preferences and project context', layers.ids, 5).catch(() => [])
     ])
 
     const sections = []
@@ -29,16 +28,22 @@ const main = async () => {
       sections.push(`Profile:\n${profile}`)
     }
 
-    if (memories.length > 0) {
-      sections.push('Recent memories:\n' + memories.map((m) => `- ${m.text}`).join('\n'))
+    if (workspaceProfile) {
+      sections.push(`Workspace conventions:\n${workspaceProfile}`)
     }
 
-    const block = sections.length > 0
-      ? sections.join('\n\n')
-      : '(no memories yet for this workspace)'
+    if (memories.length > 0) {
+      sections.push('Recent memories:\n' + memories.map((m) => `- [${m.layer}] ${m.text}`).join('\n'))
+    }
+
+    if (sections.length === 0) {
+      process.stdout.write('{}\n')
+      await mongoose.disconnect()
+      return
+    }
 
     const output = {
-      additional_context: `[MegaMem] Memory context for this workspace:\n${block}`
+      additional_context: `[MegaMem] Memory context for this workspace:\n${sections.join('\n\n')}`
     }
     process.stdout.write(JSON.stringify(output) + '\n')
     await mongoose.disconnect()

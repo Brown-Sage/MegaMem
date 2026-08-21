@@ -5,6 +5,7 @@ const { extractMemories } = require('./extractionService')
 const { detectMemoryConflict } = require('./conflictService')
 const { applyMemoryDecision } = require('./memoryService')
 const { chunkText, dedupeChunks } = require('../utils/chunker')
+const { resolveSessionIds, targetSessionId } = require('../utils/sessionId')
 
 const MIN_EXTRACTION_CONFIDENCE = 0.6
 
@@ -13,7 +14,23 @@ const formatConversation = ({ query, answer }) => [
   `Assistant: ${answer}`
 ].join('\n')
 
-const persistExtractedMemories = async ({ conversation, sessionId }) => {
+const layersForPersist = ({ sessionId, userId, workspaceId }) => {
+  if (sessionId) return resolveSessionIds(sessionId)
+  if (userId && workspaceId) {
+    const ids = [...new Set([userId, workspaceId])]
+    return { userId, workspaceId, explicit: null, ids }
+  }
+  return resolveSessionIds(undefined)
+}
+
+const persistExtractedMemories = async ({
+  conversation,
+  sessionId,
+  userId,
+  workspaceId,
+  scope
+}) => {
+  const layers = layersForPersist({ sessionId, userId, workspaceId })
   const chunks = dedupeChunks(chunkText(conversation))
   console.error(`[pipeline] Chunks created: ${chunks.length}`)
   chunks.forEach((c, i) => console.error(`[pipeline]   Chunk ${i + 1} length: ${c.length} chars`))
@@ -34,21 +51,26 @@ const persistExtractedMemories = async ({ conversation, sessionId }) => {
       continue
     }
 
+    const targetId = targetSessionId(layers, memory.type, scope)
+
     try {
       const decision = await detectMemoryConflict({
         memory,
-        sessionId
+        sessionId: targetId
       })
 
       const applied = await applyMemoryDecision({
         decision,
-        sessionId,
-        fallbackText: memory.text
+        sessionId: targetId,
+        fallbackText: memory.text,
+        type: memory.type
       })
 
       results.push({
         action: applied.action,
         text: memory.text,
+        type: memory.type,
+        sessionId: targetId,
         memoryId: applied.memory?._id?.toString() || null,
         reason: applied.reason
       })

@@ -1,4 +1,8 @@
 const { z } = require('zod')
+const { MEMORY_TYPES } = require('../constants/memoryTypes')
+
+const scopeSchema = z.enum(['user', 'workspace'])
+const memoryTypeSchema = z.enum(MEMORY_TYPES)
 
 const memoryIdSchema = z
   .string()
@@ -48,12 +52,15 @@ const toolArgsSchema = {
 
   memory_save: z.object({
     text: z.string().min(1).max(MEMORY_SAVE_MAX_CHARS),
-    sessionId: sessionIdSchema.optional()
+    sessionId: sessionIdSchema.optional(),
+    type: memoryTypeSchema.optional(),
+    scope: scopeSchema.optional()
   }).strict(),
 
   memory_extract: z.object({
     text: z.string().min(1).max(MEMORY_EXTRACT_MAX_CHARS),
-    sessionId: sessionIdSchema.optional()
+    sessionId: sessionIdSchema.optional(),
+    scope: scopeSchema.optional()
   }).strict(),
 
   memory_list: z.object({

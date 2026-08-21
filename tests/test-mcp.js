@@ -25,6 +25,7 @@ const run = async () => {
     }
   })
   console.log(`protocol: ${init.result?.protocolVersion}, server: ${init.result?.serverInfo?.name}`)
+  console.log(`instructions: ${init.result?.instructions ? 'present' : 'MISSING'}`)
 
   console.log('\n--- test 2: tools/list ---')
   const list = await handleJsonRpc({
@@ -243,6 +244,94 @@ const run = async () => {
 
   const isolationResult = JSON.parse(isolation.result?.content?.[0]?.text || '{}')
   console.log(`matches in original session: ${isolationResult.count}`)
+
+  console.log('\n--- test 10: two-layer default save/search ---')
+
+  const prevUser = process.env.MEGAMEM_USER_ID
+  const prevWs = process.env.MEGAMEM_WORKSPACE_ID
+  const userLayer = `mcp_user_${Date.now()}`
+  const workspaceLayer = `mcp_ws_${Date.now()}`
+  process.env.MEGAMEM_USER_ID = userLayer
+  process.env.MEGAMEM_WORKSPACE_ID = workspaceLayer
+
+  const userSave = await handleJsonRpc({
+    jsonrpc: '2.0',
+    id: 11,
+    method: 'tools/call',
+    params: {
+      name: 'memory_save',
+      arguments: {
+        text: 'I love bhindi ki sabzi for two-layer tests'
+      }
+    }
+  })
+  const userSaved = JSON.parse(userSave.result?.content?.[0]?.text || '{}')
+  console.log(`user save layer=${userSaved.layer} sessionId=${userSaved.sessionId} action=${userSaved.action}`)
+
+  const wsSave = await handleJsonRpc({
+    jsonrpc: '2.0',
+    id: 12,
+    method: 'tools/call',
+    params: {
+      name: 'memory_save',
+      arguments: {
+        text: 'Use npm run install:mcp to write ~/.cursor/mcp.json',
+        type: 'decision'
+      }
+    }
+  })
+  const wsSaved = JSON.parse(wsSave.result?.content?.[0]?.text || '{}')
+  console.log(`workspace save layer=${wsSaved.layer} sessionId=${wsSaved.sessionId} action=${wsSaved.action}`)
+
+  const dualList = await handleJsonRpc({
+    jsonrpc: '2.0',
+    id: 13,
+    method: 'tools/call',
+    params: {
+      name: 'memory_list',
+      arguments: {}
+    }
+  })
+  const dualListed = JSON.parse(dualList.result?.content?.[0]?.text || '{}')
+  console.log(`default list count: ${dualListed.count}`)
+
+  const dualSearch = await handleJsonRpc({
+    jsonrpc: '2.0',
+    id: 14,
+    method: 'tools/call',
+    params: {
+      name: 'memory_search',
+      arguments: {
+        query: 'install:mcp'
+      }
+    }
+  })
+  const dualSearchResult = JSON.parse(dualSearch.result?.content?.[0]?.text || '{}')
+  console.log(`default search matches: ${dualSearchResult.count}`)
+  dualSearchResult.memories?.forEach(m =>
+    console.log(`  - [${m.layer}] ${m.text}`)
+  )
+
+  if (!init.result?.instructions) {
+    console.error('FAIL: initialize did not return instructions')
+    process.exitCode = 1
+  }
+  if (userSaved.sessionId !== userLayer || userSaved.layer !== 'user') {
+    console.error('FAIL: default save did not land on user layer')
+    process.exitCode = 1
+  }
+  if (wsSaved.sessionId !== workspaceLayer || wsSaved.layer !== 'workspace') {
+    console.error('FAIL: decision save did not land on workspace layer')
+    process.exitCode = 1
+  }
+
+  await Memory.deleteMany({ sessionId: userLayer })
+  await Memory.deleteMany({ sessionId: workspaceLayer })
+
+  if (prevUser === undefined) delete process.env.MEGAMEM_USER_ID
+  else process.env.MEGAMEM_USER_ID = prevUser
+  if (prevWs === undefined) delete process.env.MEGAMEM_WORKSPACE_ID
+  else process.env.MEGAMEM_WORKSPACE_ID = prevWs
 
   await Memory.deleteMany({ sessionId })
   await Memory.deleteMany({ sessionId: otherSession })

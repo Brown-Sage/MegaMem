@@ -17,7 +17,9 @@
     "test:guard": "node tests/test-token-guard.js",
     "test:validation": "node tests/test-validation.js",
     "test:http": "node tests/test-http.js",
-    "test:mcp": "node tests/test-mcp.js"
+    "test:mcp": "node tests/test-mcp.js",
+    "test:session": "node tests/test-session-id.js",
+    "test:layers": "node tests/test-retrieve-layers.js"
   },
   "keywords": [],
   "author": "",
