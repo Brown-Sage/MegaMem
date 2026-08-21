@@ -2,7 +2,10 @@ const path = require('path')
 require('dotenv').config({ path: path.join(__dirname, '..', '.env'), quiet: true })
 const connectDB = require('./config/db')
 const { handleJsonRpc } = require('./services/mcpToolService')
+const { child } = require('./utils/log')
 const readline = require('readline')
+
+const log = child('mcp')
 
 const connect = async () => {
   await connectDB()
@@ -38,6 +41,6 @@ const startStdioTransport = () => {
 }
 
 connect().catch(error => {
-  console.error('MCP server failed:', error.message)
+  log.error({ err: error.message }, 'MCP server failed')
   process.exit(1)
 })

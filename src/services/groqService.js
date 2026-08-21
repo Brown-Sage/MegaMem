@@ -1,5 +1,20 @@
 const Groq = require('groq-sdk')
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY })
+const { child } = require('../utils/log')
+
+const log = child('groq')
+
+// Lazily constructed so requiring this module never needs an API key
+// (unit tests run offline). __setClient overrides everything for tests.
+let overrideClient = null
+let defaultClient = null
+
+const getClient = () => {
+  if (overrideClient) return overrideClient
+  if (!defaultClient) defaultClient = new Groq({ apiKey: process.env.GROQ_API_KEY })
+  return defaultClient
+}
+
+const __setClient = (next) => { overrideClient = next }
 
 // llama-3.3-70b-versatile was retired by Groq. openai/gpt-oss-20b returns
 // clean JSON without reasoning-token leakage, so it is the default.
@@ -90,21 +105,39 @@ const chat = async (prompt) => {
 
 const RETRY_BACKOFF = [1000, 2000]
 
+// gpt-oss models are reasoners: hidden reasoning tokens count against
+// max_tokens and can truncate JSON output mid-array. 'low' effort cut
+// reasoning tokens ~10x in testing while keeping extraction quality.
+const isReasoningModel = (model) => /gpt-oss/i.test(model || '')
+
+const resolveReasoningEffort = (model, requested) => {
+  if (requested !== undefined) return requested
+  const envEffort = process.env.MEGAMEM_REASONING_EFFORT
+  if (envEffort) return envEffort
+  return isReasoningModel(model) ? 'low' : undefined
+}
+
 const completeChat = async (messages, options = {}) => {
   const maxRetries = options.maxRetries ?? 2
   const timeoutMs = options.timeoutMs ?? 10000
+  const model = options.model || DEFAULT_MODEL
   let lastError
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     await groqAcquire()
     try {
+      const requestBody = {
+        model,
+        messages,
+        max_tokens: options.maxTokens || 1000,
+        temperature: options.temperature ?? 0.3
+      }
+
+      const reasoningEffort = resolveReasoningEffort(model, options.reasoningEffort)
+      if (reasoningEffort) requestBody.reasoning_effort = reasoningEffort
+
       const response = await Promise.race([
-        groq.chat.completions.create({
-          model: options.model || DEFAULT_MODEL,
-          messages,
-          max_tokens: options.maxTokens || 1000,
-          temperature: options.temperature ?? 0.3
-        }),
+        getClient().chat.completions.create(requestBody),
         new Promise((_, reject) =>
           setTimeout(
             () => reject(new Error('Groq API timeout after ' + timeoutMs / 1000 + 's')),
@@ -113,13 +146,16 @@ const completeChat = async (messages, options = {}) => {
         )
       ])
 
-      return response.choices[0].message.content
+      const choice = response.choices[0]
+      if (choice.finish_reason === 'length') {
+        log.warn({ maxTokens: requestBody.max_tokens }, 'response hit max_tokens; output may be truncated')
+      }
+
+      return choice.message.content
     } catch (err) {
       lastError = err
       if (!isRetryableError(err) || attempt === maxRetries) throw err
-      console.error(
-        '[groq] attempt ' + (attempt + 1) + '/' + (maxRetries + 1) + ' failed, retrying: ' + err.message
-      )
+      log.warn({ attempt: attempt + 1, maxAttempts: maxRetries + 1, err: err.message }, 'groq retry')
     } finally {
       groqRelease()
     }
@@ -133,4 +169,4 @@ const completeChat = async (messages, options = {}) => {
   throw lastError
 }
 
-module.exports = { chat, completeChat, isRetryableError, DEFAULT_MODEL }
+module.exports = { chat, completeChat, isRetryableError, DEFAULT_MODEL, __setClient }

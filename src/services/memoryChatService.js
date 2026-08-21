@@ -6,6 +6,9 @@ const { detectMemoryConflict } = require('./conflictService')
 const { applyMemoryDecision } = require('./memoryService')
 const { chunkText, dedupeChunks } = require('../utils/chunker')
 const { resolveSessionIds, targetSessionId } = require('../utils/sessionId')
+const { child } = require('../utils/log')
+
+const log = child('chat')
 
 const MIN_EXTRACTION_CONFIDENCE = 0.6
 
@@ -32,12 +35,12 @@ const persistExtractedMemories = async ({
 }) => {
   const layers = layersForPersist({ sessionId, userId, workspaceId })
   const chunks = dedupeChunks(chunkText(conversation))
-  console.error(`[pipeline] Chunks created: ${chunks.length}`)
-  chunks.forEach((c, i) => console.error(`[pipeline]   Chunk ${i + 1} length: ${c.length} chars`))
+  log.info({ chunks: chunks.length }, 'chunks created')
+  log.debug({ lengths: chunks.map(c => c.length) }, 'chunk sizes')
 
   const extracted = await extractMemories({ conversation, chunks })
-  console.error(`[pipeline] Final merged memories: ${extracted.length}`)
-  extracted.forEach((m, i) => console.error(`[pipeline]   ${i + 1}. [${m.type}] (conf=${m.confidence}) ${m.text}`))
+  log.info({ count: extracted.length }, 'extraction merged')
+  log.debug({ memories: extracted.map(m => ({ type: m.type, confidence: m.confidence, text: m.text })) }, 'merged memory detail')
 
   const results = []
 
@@ -75,7 +78,7 @@ const persistExtractedMemories = async ({
         reason: applied.reason
       })
     } catch (error) {
-      console.error('memory persistence failed:', error.message)
+      log.warn({ err: error.message }, 'memory persistence failed')
       results.push({
         action: 'error',
         text: memory.text,
@@ -98,11 +101,11 @@ const chatWithMemory = async ({ query, sessionId, topK = 5 }) => {
     .then(results => {
       const saved = results.filter(r => r.action === 'create' || r.action === 'update')
       if (saved.length > 0) {
-        console.error(`auto-memory: ${saved.length} saved for session ${sessionId}`)
+        log.info({ saved: saved.length, sessionId }, 'auto-memory persisted')
       }
     })
     .catch(error => {
-      console.error('auto-memory pipeline failed:', error.message)
+      log.error({ err: error.message }, 'auto-memory pipeline failed')
     })
 
   return {

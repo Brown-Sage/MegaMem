@@ -6,6 +6,10 @@
   "scripts": {
     "start": "node index.js",
     "mcp": "node src/mcpServer.js",
+    "test": "node --test \"tests/unit/*.test.js\"",
+    "lint": "eslint .",
+    "eval:locomo": "node benchmarks/locomo/runEval.js",
+    "install:mcp": "node scripts/install-cursor-mcp.js",
     "test:embed": "node tests/test-embed.js",
     "test:groq": "node tests/testgroq.js",
     "test:chat": "node tests/test-chat-memory.js",
@@ -30,6 +34,11 @@
     "express": "^5.2.1",
     "groq-sdk": "^1.3.0",
     "mongoose": "^9.7.3",
+    "pino": "^10.3.1",
     "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.8.1"
   }
 }

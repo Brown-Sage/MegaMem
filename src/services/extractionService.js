@@ -1,6 +1,9 @@
 const { completeChat } = require('./groqService')
 const { parseJsonObject } = require('../utils/json')
+const { child } = require('../utils/log')
 const { MEMORY_TYPES, TECHNICAL_MEMORY_TYPES } = require('../constants/memoryTypes')
+
+const log = child('extract')
 
 const MAX_MEMORY_TEXT_LENGTH = 500
 
@@ -116,7 +119,8 @@ const reExtractOversized = async (oversized, chunkIndex) => {
 
   const content = await completeChat(messages, {
     temperature: 0,
-    maxTokens: 800
+    maxTokens: 2000,
+    timeoutMs: 30000
   })
 
   const parsed = parseJsonObject(content, 'Re-extraction')
@@ -127,7 +131,7 @@ const reExtractOversized = async (oversized, chunkIndex) => {
     .filter(Boolean)
 
   const chunkLabel = chunkIndex !== undefined ? `chunk ${chunkIndex + 1}` : 'chunk'
-  console.error(`[pipeline] Re-extracted ${oversized.length} oversized memories in ${chunkLabel}: ${normalized.length} survived`)
+  log.info({ oversized: oversized.length, chunk: chunkLabel, survived: normalized.length }, 're-extraction complete')
 
   return normalized
 }
@@ -140,7 +144,8 @@ const extractFromChunk = async ({ chunk, maxMemories, chunkIndex }) => {
 
   const content = await completeChat(messages, {
     temperature: 0,
-    maxTokens: 800
+    maxTokens: 2000,
+    timeoutMs: 30000
   })
 
   const parsed = parseJsonObject(content, 'Memory extraction')
@@ -164,13 +169,13 @@ const extractFromChunk = async ({ chunk, maxMemories, chunkIndex }) => {
       const reExtracted = await reExtractOversized(oversized, chunkIndex)
       normalized.push(...reExtracted)
     } catch (error) {
-      console.error(`[pipeline] re-extraction failed for chunk ${(chunkIndex ?? 0) + 1}: ${error.message}`)
+      log.warn({ err: error.message, chunk: (chunkIndex ?? 0) + 1 }, 're-extraction failed')
     }
   }
 
   if (chunkIndex !== undefined) {
-    console.error(`[pipeline] Memories extracted from chunk ${chunkIndex + 1}: ${normalized.length}`)
-    normalized.forEach((m, i) => console.error(`[pipeline]   ${i + 1}. [${m.type}] (conf=${m.confidence}) ${m.text}`))
+    log.info({ chunk: chunkIndex + 1, memories: normalized.length }, 'chunk extracted')
+    log.debug({ memories: normalized.map(m => ({ type: m.type, confidence: m.confidence, text: m.text })) }, 'chunk memory detail')
   }
 
   return normalized
@@ -220,7 +225,7 @@ const extractMemories = async ({ conversation, maxMemories = 5, chunks }) => {
       })
       allMemories.push(...chunkMemories)
     } catch (error) {
-      console.error('chunk extraction failed:', error.message)
+      log.warn({ err: error.message }, 'chunk extraction failed')
     }
   }
 
@@ -230,6 +235,8 @@ const extractMemories = async ({ conversation, maxMemories = 5, chunks }) => {
 module.exports = {
   extractMemories,
   buildExtractionMessages,
+  normalizeMemory,
+  dedupeExtracted,
   MEMORY_TYPES,
   TECHNICAL_MEMORY_TYPES
 }

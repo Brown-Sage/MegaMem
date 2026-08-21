@@ -324,7 +324,8 @@ const TOOL_HANDLERS = {
 }
 
 const handleToolsCall = async (id, params) => {
-  let { name, arguments: args = {} } = params || {}
+  const { name } = params || {}
+  let args = (params && params.arguments) || {}
 
   if (!name) {
     return jsonRpcError(id, -32602, 'Invalid params: missing tool name')

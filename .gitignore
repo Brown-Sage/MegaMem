@@ -30,7 +30,10 @@ dist-ssr/
 
 # Others
 AGENTS.md
-benchmarks/
+
+# Benchmarks: track harness scripts, ignore datasets + generated results
+benchmarks/results/
+benchmarks/locomo/*.json
 
 # Cursor local MCP config (contains machine-specific absolute paths)
 .cursor/mcp.json

@@ -34,7 +34,8 @@ const buildProfileMessages = (memories) => [
 const compileProfile = async (sessionId, memories) => {
   const content = await completeChat(buildProfileMessages(memories), {
     temperature: 0,
-    maxTokens: 1500
+    maxTokens: 1500,
+    timeoutMs: 30000
   })
 
   const parsed = parseJsonObject(content, 'Profile compilation')

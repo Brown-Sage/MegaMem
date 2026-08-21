@@ -127,7 +127,8 @@ const detectMemoryConflict = async ({ memory, sessionId, topK = 5, minScore = 0.
     candidates
   }), {
     temperature: 0,
-    maxTokens: 500
+    maxTokens: 1000,
+    timeoutMs: 20000
   })
 
   return {
@@ -139,5 +140,6 @@ const detectMemoryConflict = async ({ memory, sessionId, topK = 5, minScore = 0.
 module.exports = {
   detectMemoryConflict,
   findSimilarMemories,
-  buildConflictMessages
+  buildConflictMessages,
+  normalizeDecision
 }

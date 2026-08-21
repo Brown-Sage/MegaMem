@@ -1,12 +1,10 @@
+const { child } = require('./log')
+
+const log = child('chunker')
+
 const DEFAULT_MAX_CHARS = 6000
 const DEFAULT_OVERLAP_CHARS = 400
-const DEFAULT_MIN_CHUNK_CHARS = 200
 const DEFAULT_MAX_CHUNKS = 20
-
-const splitIntoSentences = (text) => {
-  const matches = text.match(/[^.!?\n]+[.!?\n]?/g)
-  return matches ? matches.map(s => s.trim()).filter(Boolean) : [text]
-}
 
 const splitIntoParagraphs = (text) => {
   return text
@@ -24,7 +22,7 @@ const hardSplit = (text, maxChars, overlapChars) => {
   return chunks
 }
 
-const buildChunksFromParagraphs = ({ paragraphs, maxChars, overlapChars, minChunkChars }) => {
+const buildChunksFromParagraphs = ({ paragraphs, maxChars, overlapChars }) => {
   const chunks = []
   let current = ''
 
@@ -70,21 +68,20 @@ const chunkText = (text, options = {}) => {
     return []
   }
 
-  const maxChars = options.maxChars || DEFAULT_MAX_CHARS
-  const overlapChars = options.overlapChars || DEFAULT_OVERLAP_CHARS
-  const minChunkChars = options.minChunkChars || DEFAULT_MIN_CHUNK_CHARS
-  const maxChunks = options.maxChunks || DEFAULT_MAX_CHUNKS
+  const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS
+  const overlapChars = options.overlapChars ?? DEFAULT_OVERLAP_CHARS
+  const maxChunks = options.maxChunks ?? DEFAULT_MAX_CHUNKS
 
   if (text.length <= maxChars) {
     return [text.trim()]
   }
 
   const paragraphs = splitIntoParagraphs(text)
-  let chunks = buildChunksFromParagraphs({ paragraphs, maxChars, overlapChars, minChunkChars })
+  let chunks = buildChunksFromParagraphs({ paragraphs, maxChars, overlapChars })
 
   if (chunks.length > maxChunks) {
     const dropped = chunks.length - maxChunks
-    console.warn(`[chunker] Truncated chunks from ${chunks.length} to ${maxChunks} (${dropped} chunks dropped)`)
+    log.warn({ original: chunks.length, cappedTo: maxChunks, dropped }, 'chunk truncation')
     chunks = chunks.slice(0, maxChunks)
   }
 

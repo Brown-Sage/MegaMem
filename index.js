@@ -2,9 +2,12 @@ require('dotenv').config()
 const express = require('express')
 const crypto = require('crypto')
 const connectDB = require('./src/config/db')
+const { child } = require('./src/utils/log')
 const { chatWithMemory } = require('./src/services/memoryChatService')
 const { handleJsonRpc, MEMORY_TOOLS } = require('./src/services/mcpToolService')
 const { validate, chatBodySchema } = require('./src/validation/schemas')
+
+const log = child('http')
 
 const app = express()
 app.use(express.json())
@@ -31,7 +34,7 @@ app.post('/chat', async (req, res) => {
     const result = await chatWithMemory({ query, sessionId, topK })
     res.json(result)
   } catch (error) {
-    console.error('/chat failed:', error.message)
+    log.error({ err: error.message }, '/chat failed')
     res.status(500).json({ error: error.message })
   }
 })
@@ -97,10 +100,10 @@ app.post('/mcp/messages', async (req, res) => {
 
     res.status(202).json({ accepted: true })
   } catch (error) {
-    console.error('/mcp/messages failed:', error.message)
+    log.error({ err: error.message }, '/mcp/messages failed')
     res.status(500).json({ error: error.message })
   }
 })
 
 const PORT = process.env.PORT || 3000
-app.listen(PORT, () => console.log(`Megamem server running on port ${PORT}`))
+app.listen(PORT, () => log.info({ port: PORT }, 'Megamem server running'))

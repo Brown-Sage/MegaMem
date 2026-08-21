@@ -104,19 +104,21 @@ Vector retrieval expects a MongoDB Atlas vector search index named `vector_index
 
 ## 🔌 Connect Your Assistant
 
-**Cursor** — add to `.cursor/mcp.json`:
+**Cursor** — merge MegaMem into your user config (`~/.cursor/mcp.json`):
+
+```bash
+cp .env.example .env   # fill in your keys
+npm run install:mcp
+```
+
+The script writes only the `megamem` server (other MCP servers are left alone). It uses the absolute path to `src/mcpServer.js` and reads secrets from the repo `.env` — they are not copied into `mcp.json`. Use `npm run install:mcp -- --dry-run` to preview, or `npm run install:mcp -- --remove` to drop the MegaMem entry.
 
 ```json
 {
   "mcpServers": {
     "megamem": {
       "command": "node",
-      "args": ["/absolute/path/to/MegaMem/src/mcpServer.js"],
-      "env": {
-        "MONGO_URI": "your-mongo-uri",
-        "GROQ_API_KEY": "your-groq-key",
-        "HUGGINGFACE_API_KEY": "your-hf-key"
-      }
+      "args": ["/absolute/path/to/MegaMem/src/mcpServer.js"]
     }
   }
 }
