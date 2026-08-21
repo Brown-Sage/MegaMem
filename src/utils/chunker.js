@@ -80,9 +80,16 @@ const chunkText = (text, options = {}) => {
   let chunks = buildChunksFromParagraphs({ paragraphs, maxChars, overlapChars })
 
   if (chunks.length > maxChunks) {
-    const dropped = chunks.length - maxChunks
-    log.warn({ original: chunks.length, cappedTo: maxChunks, dropped }, 'chunk truncation')
-    chunks = chunks.slice(0, maxChunks)
+    // Lossless overflow: merge the tail chunks into larger ones instead of
+    // dropping content. Fewer boundaries, zero data loss.
+    const originalCount = chunks.length
+    const groupSize = Math.ceil(chunks.length / maxChunks)
+    const merged = []
+    for (let i = 0; i < chunks.length; i += groupSize) {
+      merged.push(chunks.slice(i, i + groupSize).join('\n\n'))
+    }
+    log.warn({ original: originalCount, mergedTo: merged.length }, 'chunk overflow merged')
+    chunks = merged
   }
 
   return chunks

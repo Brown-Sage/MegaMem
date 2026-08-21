@@ -8,7 +8,7 @@ test('normalizeDecision falls back to create on unknown action', () => {
 })
 
 test('normalizeDecision keeps valid actions', () => {
-  for (const action of ['create', 'update', 'skip']) {
+  for (const action of ['create', 'update', 'skip', 'delete']) {
     assert.equal(normalizeDecision({ action }).action, action)
   }
 })
@@ -46,8 +46,9 @@ test('buildConflictMessages includes actions and JSON shape', () => {
   })
   assert.equal(messages.length, 2)
   assert.equal(messages[0].role, 'system')
-  assert.match(messages[0].content, /create|update|skip/)
+  assert.match(messages[0].content, /delete/)
   assert.match(messages[1].content, /targetMemoryId/)
+  assert.match(messages[1].content, /create\|update\|skip\|delete/)
   assert.match(messages[1].content, /uses vim/)
   assert.match(messages[1].content, /uses emacs/)
 })

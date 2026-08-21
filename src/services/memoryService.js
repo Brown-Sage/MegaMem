@@ -1,46 +1,103 @@
 const Memory = require('../models/Memory')
+const MemoryHistory = require('../models/MemoryHistory')
 const { embedText } = require('./embedService')
-const { log } = require('../utils/log')
+const { computeDedupKey } = require('../utils/dedupKey')
+const { child } = require('../utils/log')
 const { MEMORY_TYPES } = require('../constants/memoryTypes')
+
+const log = child('memory')
 
 const normalizeType = (type) => (MEMORY_TYPES.includes(type) ? type : 'other')
 
-const saveMemory = async (text, sessionId, type = 'other') => {
-  const embedding = await embedText(text)
+const recordHistory = ({ memoryId, sessionId, event, oldMemory = null, newMemory = null, reason = '', actor = 'mcp' }) =>
+  MemoryHistory.create({
+    memoryId: String(memoryId),
+    sessionId,
+    event,
+    oldMemory,
+    newMemory,
+    reason,
+    actor
+  }).catch((err) => log.warn({ err: err.message, memoryId, event }, 'history write failed'))
+
+const saveMemory = async (text, sessionId, type = 'other', { actor = 'mcp', eventAt = null, embedding = null } = {}) => {
+  const vector = embedding || await embedText(text)
   const memory = new Memory({
     sessionId,
     text,
     type: normalizeType(type),
-    embedding
+    embedding: vector,
+    dedupKey: computeDedupKey(text),
+    eventAt: eventAt || undefined
   })
   await memory.save()
-  log('memory saved:', text)
+  await recordHistory({
+    memoryId: memory._id,
+    sessionId,
+    event: 'add',
+    newMemory: memory.text,
+    actor
+  })
+  log.info({ sessionId, type: memory.type }, 'memory saved')
   return memory
 }
 
-const updateMemory = async (memoryId, text, type) => {
-  const embedding = await embedText(text)
-  const update = {
-    text,
-    embedding,
-    updatedAt: new Date()
+const updateMemory = async (memoryId, text, type, { actor = 'mcp', embedding = null } = {}) => {
+  const existing = await Memory.findById(memoryId)
+  if (!existing) {
+    throw new Error(`Memory not found for update: ${memoryId}`)
   }
 
+  const previousText = existing.text
+
+  existing.text = text
+  existing.embedding = embedding || await embedText(text)
+  existing.dedupKey = computeDedupKey(text)
+  existing.updatedAt = new Date()
   if (type !== undefined) {
-    update.type = normalizeType(type)
+    existing.type = normalizeType(type)
   }
 
+  await existing.save()
+  await recordHistory({
+    memoryId,
+    sessionId: existing.sessionId,
+    event: 'update',
+    oldMemory: previousText,
+    newMemory: existing.text,
+    actor
+  })
+  log.info({ memoryId }, 'memory updated')
+  return existing
+}
+
+// Soft-delete: keeps the document retrievable by id (audit/undo) while every
+// read path filters on status:'active'.
+const deleteMemory = async (memoryId, { reason = '', actor = 'mcp' } = {}) => {
   const memory = await Memory.findByIdAndUpdate(
     memoryId,
-    update,
+    {
+      status: 'deleted',
+      deletedAt: new Date(),
+      validUntil: new Date(),
+      updatedAt: new Date()
+    },
     { returnDocument: 'after' }
   )
 
   if (!memory) {
-    throw new Error(`Memory not found for update: ${memoryId}`)
+    throw new Error(`Memory not found for delete: ${memoryId}`)
   }
 
-  log('memory updated:', text)
+  await recordHistory({
+    memoryId,
+    sessionId: memory.sessionId,
+    event: 'delete',
+    oldMemory: memory.text,
+    reason,
+    actor
+  })
+  log.info({ memoryId, reason }, 'memory deleted')
   return memory
 }
 
@@ -49,7 +106,8 @@ const applyMemoryDecision = async ({
   sessionId,
   fallbackText,
   type,
-  minConfidence = 0.75
+  minConfidence = 0.75,
+  actor = 'mcp'
 }) => {
   if (!decision || !decision.action) {
     throw new Error('applyMemoryDecision requires a decision')
@@ -88,14 +146,39 @@ const applyMemoryDecision = async ({
 
     return {
       action: 'update',
-      memory: await updateMemory(decision.targetMemoryId, text.trim(), resolvedType),
+      memory: await updateMemory(decision.targetMemoryId, text.trim(), resolvedType, { actor }),
       reason: decision.reason || 'Memory updated.'
+    }
+  }
+
+  if (decision.action === 'delete') {
+    if (!decision.targetMemoryId) {
+      throw new Error('Delete decision requires targetMemoryId')
+    }
+
+    const deleted = await deleteMemory(decision.targetMemoryId, {
+      reason: decision.reason || '',
+      actor
+    })
+
+    // A delete decision may also carry replacement text worth keeping.
+    let created = null
+    if (decision.memoryText && decision.memoryText.trim() &&
+        computeDedupKey(decision.memoryText) !== deleted.dedupKey) {
+      created = await saveMemory(decision.memoryText.trim(), sessionId, resolvedType, { actor })
+    }
+
+    return {
+      action: 'delete',
+      memory: created || deleted,
+      deletedMemory: deleted,
+      reason: decision.reason || 'Contradicted memory removed.'
     }
   }
 
   return {
     action: 'create',
-    memory: await saveMemory(text.trim(), sessionId, resolvedType),
+    memory: await saveMemory(text.trim(), sessionId, resolvedType, { actor }),
     reason: decision.reason || 'Memory created.'
   }
 }
@@ -103,5 +186,7 @@ const applyMemoryDecision = async ({
 module.exports = {
   saveMemory,
   updateMemory,
-  applyMemoryDecision
+  deleteMemory,
+  applyMemoryDecision,
+  recordHistory
 }

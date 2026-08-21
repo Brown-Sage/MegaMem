@@ -360,6 +360,20 @@ async function main () {
   // ---- ingest ----
   let sessionsIngested = 0
   let ingestKeys = []
+  const INGEST_CHECKPOINT_PATH = path.join(__dirname, 'eval-ingest-checkpoint.json')
+
+  // Session-level checkpointing so a quota trip mid-ingest is resumable.
+  let alreadyIngested = new Set()
+  if (RESUME && fs.existsSync(INGEST_CHECKPOINT_PATH)) {
+    try {
+      const icp = JSON.parse(fs.readFileSync(INGEST_CHECKPOINT_PATH, 'utf-8'))
+      if (icp.sessionId === SESSION_ID && icp.convIndex === CONV_INDEX) {
+        alreadyIngested = new Set(icp.ingested)
+        console.log(`[eval] ingest resume: ${alreadyIngested.size} sessions already done`)
+      }
+    } catch { /* fresh start */ }
+  }
+
   if (!SKIP_INGEST) {
     const sessionKeys = Object.keys(conv.conversation)
       .filter((k) => /^session_\d+$/.test(k))
@@ -367,6 +381,12 @@ async function main () {
     ingestKeys = SESSION_LIMIT > 0 ? sessionKeys.slice(0, SESSION_LIMIT) : sessionKeys
 
     for (const sessionKey of ingestKeys) {
+      if (alreadyIngested.has(sessionKey)) {
+        sessionsIngested++
+        console.log(`[ingest] ${sessionKey} already done, skipping`)
+        continue
+      }
+
       const sessionNum = sessionKey.split('_')[1]
       const dateTime = conv.conversation[`session_${sessionNum}_date_time`] || 'unknown date'
       const turns = conv.conversation[sessionKey]
@@ -379,8 +399,14 @@ async function main () {
           conversation: sessionText,
           sessionId: SESSION_ID
         })
-        const saved = results.filter((r) => r.action === 'create' || r.action === 'update').length
+        const saved = results.filter((r) => r.action === 'create' || r.action === 'update' || r.action === 'delete').length
         sessionsIngested++
+        alreadyIngested.add(sessionKey)
+        fs.writeFileSync(INGEST_CHECKPOINT_PATH, JSON.stringify({
+          sessionId: SESSION_ID,
+          convIndex: CONV_INDEX,
+          ingested: [...alreadyIngested]
+        }))
         console.log(`[ingest] ${sessionKey} done in ${Date.now() - startedAt}ms — ${saved} saved / ${results.length} extracted`)
       } catch (err) {
         console.error(`[ingest] ${sessionKey} FAILED: ${err.message}`)

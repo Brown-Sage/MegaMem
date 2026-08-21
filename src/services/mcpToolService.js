@@ -4,6 +4,9 @@ const { applyMemoryDecision } = require('./memoryService')
 const { detectMemoryConflict } = require('./conflictService')
 const { persistExtractedMemories } = require('./memoryChatService')
 const { getProfile } = require('./profileService')
+const { embedText } = require('./embedService')
+const { computeDedupKey } = require('../utils/dedupKey')
+const { recordWrite, checkRecentDuplicate, getRecentCandidates } = require('../utils/recentWrites')
 const { validate, toolArgsSchema } = require('../validation/schemas')
 const { resolveSessionIds, targetSessionId, layerLabel } = require('../utils/sessionId')
 const { MEMORY_TYPES } = require('../constants/memoryTypes')
@@ -168,19 +171,37 @@ const callMemorySave = async (args) => {
     )
   }
 
-  const existing = await Memory.findOne({ sessionId, text: text.trim() })
+  // One embed up front serves the race check, conflict search, and persist.
+  const dedupKey = computeDedupKey(text)
+  const embedding = await embedText(text)
+
+  // Layer 1 — exact duplicate (case/punctuation insensitive, DB-indexed).
+  const existing = await Memory.findOne({ sessionId, dedupKey, status: 'active' })
   if (existing) {
     return toolCallText(JSON.stringify({
       action: 'skip',
       memoryId: existing._id.toString(),
       text: existing.text,
-      reason: 'Exact duplicate already exists.'
+      reason: 'Duplicate already exists.'
+    }))
+  }
+
+  // Layer 2 — recent-writes buffer closes the ~3s Atlas indexing gap.
+  const recent = checkRecentDuplicate({ sessionId, dedupKey, embedding })
+  if (recent.duplicate) {
+    return toolCallText(JSON.stringify({
+      action: 'skip',
+      memoryId: null,
+      text: text.trim(),
+      reason: recent.reason
     }))
   }
 
   const decision = await detectMemoryConflict({
     memory: { text, confidence: 1, type },
-    sessionId
+    sessionId,
+    queryEmbedding: embedding,
+    extraCandidates: getRecentCandidates(sessionId)
   })
 
   const applied = await applyMemoryDecision({
@@ -189,6 +210,15 @@ const callMemorySave = async (args) => {
     fallbackText: text,
     type
   })
+
+  if (applied.action === 'create' || applied.action === 'update') {
+    recordWrite({
+      sessionId,
+      memoryId: applied.memory?._id?.toString() || null,
+      dedupKey: computeDedupKey(applied.memory?.text || text),
+      embedding
+    })
+  }
 
   return toolCallText(JSON.stringify({
     action: applied.action,
@@ -239,7 +269,7 @@ const callMemoryExtract = async (args) => {
 const callMemoryList = async (args) => {
   const { limit = 20, cursor } = args
   const layers = resolveSessionIds(args.sessionId)
-  const filter = { sessionId: { $in: layers.ids } }
+  const filter = { sessionId: { $in: layers.ids }, status: 'active' }
 
   if (cursor) {
     try {
@@ -381,5 +411,6 @@ module.exports = {
   MEMORY_TOOLS,
   SERVER_INSTRUCTIONS,
   handleJsonRpc,
-  TOOL_HANDLERS
+  TOOL_HANDLERS,
+  callMemorySave
 }

@@ -1,11 +1,20 @@
 const { completeChat } = require('./groqService')
-const { parseJsonObject } = require('../utils/json')
+const { parseJsonObject } = require('./../utils/json')
 const { child } = require('../utils/log')
 const { MEMORY_TYPES, TECHNICAL_MEMORY_TYPES } = require('../constants/memoryTypes')
 
 const log = child('extract')
 
 const MAX_MEMORY_TEXT_LENGTH = 500
+
+// Extraction works on smaller chunks than retrieval so the model emits
+// discrete facts instead of compressing a whole session into vague summaries.
+const EXTRACTION_CHUNK_CHARS = 1800
+const EXTRACTION_CHUNK_OVERLAP = 200
+const EXTRACTION_MAX_CHUNKS = 40
+
+// Per-chunk fact budget scales with chunk size; bounded to protect latency.
+const scaledMaxMemories = (chars) => Math.min(40, Math.max(5, Math.ceil(chars / 1500)))
 
 const clampNumber = (value, min, max, fallback) => {
   const number = Number(value)
@@ -35,7 +44,7 @@ const normalizeMemory = (memory) => {
   }
 }
 
-const buildExtractionMessages = ({ conversation, maxMemories }) => [
+const buildExtractionMessages = ({ conversation, maxMemories, context }) => [
   {
     role: 'system',
     content: [
@@ -44,13 +53,27 @@ const buildExtractionMessages = ({ conversation, maxMemories }) => [
       'Ignore greetings, filler, one-off wording, temporary debugging noise, and generic facts.',
       'Prefer concise first-person facts when the user is the subject.',
       'For coding sessions, keep project decisions, architecture, constraints, bugs, preferences, and tasks.',
-      'Return only valid JSON. Do not include markdown.'
+      'Return only valid JSON. Do not include markdown.',
+      '',
+      'Extract DISCRETE atomic facts — one fact per memory. Never summarize a whole topic into one memory.',
+      '',
+      'GOOD memories (specific, self-contained, reusable later):',
+      '- "Caroline went to the LGBTQ support group on 7 May 2023 and found it powerful."',
+      '- "Melanie signed up for a pottery class on 2 July 2023 to destress after work."',
+      '- "The team dropped MongoDB for Postgres because vector search pricing was too high."',
+      '- "Aryan prefers tabs over spaces and always wants tests before refactoring."',
+      '',
+      'BAD memories (vague summaries that lose detail):',
+      '- "Caroline values community and creative outlets."',
+      '- "Melanie is focused on self-care activities."',
+      '- "The team discussed database options."'
     ].join('\n')
   },
   {
     role: 'user',
     content: [
       `Extract up to ${maxMemories} useful memories from this conversation.`,
+      context ? '\nEarlier conversation context (use ONLY to resolve pronouns and references; do not extract memories from it):\n' + context : '',
       '',
       'Use this JSON shape exactly:',
       '{',
@@ -67,14 +90,48 @@ const buildExtractionMessages = ({ conversation, maxMemories }) => [
       '',
       'Importance scale: 1 = mildly useful, 3 = useful later, 5 = critical long-term context.',
       'Confidence scale: 0.0 = uncertain, 1.0 = directly stated.',
+      'Keep dates, names, versions, and numbers verbatim whenever they appear.',
       '',
       'If nothing is worth remembering, return {"memories":[]}.',
       '',
       'Conversation:',
       conversation
+    ].filter(Boolean).join('\n')
+  }
+]
+
+const buildSummarizationMessages = ({ previousSummary, chunk }) => [
+  {
+    role: 'system',
+    content: 'You maintain a running summary of a long conversation. Return only the summary text, nothing else.'
+  },
+  {
+    role: 'user',
+    content: [
+      'Fold the new conversation segment into the running summary.',
+      `Keep it under 300 words. Preserve names, dates, decisions, and open questions.`,
+      previousSummary ? `\nCurrent summary:\n${previousSummary}` : '\nThere is no summary yet — create one.',
+      `\nNew segment:\n${chunk}`
     ].join('\n')
   }
 ]
+
+// Rolling context lets later chunks resolve pronouns ("She went..." → name)
+// and avoid re-extracting facts already captured earlier in the conversation.
+const updateRunningSummary = async (previousSummary, chunk) => {
+  try {
+    const content = await completeChat(buildSummarizationMessages({ previousSummary, chunk }), {
+      temperature: 0,
+      maxTokens: 800,
+      timeoutMs: 30000
+    })
+    const cleaned = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
+    return cleaned.slice(0, 2000)
+  } catch (err) {
+    log.warn({ err: err.message }, 'running summary update failed')
+    return previousSummary || ''
+  }
+}
 
 const buildReExtractionMessages = (oversized) => {
   const technicalOversized = oversized.filter(m => TECHNICAL_MEMORY_TYPES.includes(m.type))
@@ -136,10 +193,11 @@ const reExtractOversized = async (oversized, chunkIndex) => {
   return normalized
 }
 
-const extractFromChunk = async ({ chunk, maxMemories, chunkIndex }) => {
+const extractFromChunk = async ({ chunk, maxMemories, chunkIndex, context }) => {
   const messages = buildExtractionMessages({
     conversation: chunk,
-    maxMemories
+    maxMemories,
+    context
   })
 
   const content = await completeChat(messages, {
@@ -195,7 +253,7 @@ const dedupeExtracted = (memories) => {
   return result
 }
 
-const extractMemories = async ({ conversation, maxMemories = 5, chunks }) => {
+const extractMemories = async ({ conversation, maxMemories, chunks, context }) => {
   if (!conversation || typeof conversation !== 'string' || !conversation.trim()) {
     return []
   }
@@ -205,23 +263,19 @@ const extractMemories = async ({ conversation, maxMemories = 5, chunks }) => {
     ? chunks
     : [conversationText]
 
-  if (conversationChunks.length === 1) {
-    const memories = await extractFromChunk({
-      chunk: conversationChunks[0],
-      maxMemories
-    })
-    return memories.slice(0, maxMemories)
-  }
-
+  // No total cap: each chunk contributes its own budget so long transcripts
+  // yield proportionally more facts instead of being silently truncated.
   const allMemories = []
 
   for (let i = 0; i < conversationChunks.length; i++) {
     const chunk = conversationChunks[i]
     try {
+      const chunkBudget = maxMemories ?? scaledMaxMemories(chunk.length)
       const chunkMemories = await extractFromChunk({
         chunk,
-        maxMemories,
-        chunkIndex: i
+        maxMemories: chunkBudget,
+        chunkIndex: conversationChunks.length > 1 ? i : undefined,
+        context
       })
       allMemories.push(...chunkMemories)
     } catch (error) {
@@ -229,7 +283,7 @@ const extractMemories = async ({ conversation, maxMemories = 5, chunks }) => {
     }
   }
 
-  return dedupeExtracted(allMemories).slice(0, maxMemories)
+  return dedupeExtracted(allMemories)
 }
 
 module.exports = {
@@ -237,6 +291,11 @@ module.exports = {
   buildExtractionMessages,
   normalizeMemory,
   dedupeExtracted,
+  updateRunningSummary,
+  scaledMaxMemories,
+  EXTRACTION_CHUNK_CHARS,
+  EXTRACTION_CHUNK_OVERLAP,
+  EXTRACTION_MAX_CHUNKS,
   MEMORY_TYPES,
   TECHNICAL_MEMORY_TYPES
 }

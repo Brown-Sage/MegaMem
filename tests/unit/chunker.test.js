@@ -31,10 +31,14 @@ test('chunkText hard-splits oversized paragraphs', () => {
   for (const chunk of chunks) assert.ok(chunk.length <= 300)
 })
 
-test('chunkText enforces maxChunks cap', () => {
+test('chunkText overflow merges tail chunks without data loss', () => {
   const text = Array.from({ length: 60 }, (_, i) => `para ${i} ${'y'.repeat(120)}`).join('\n\n')
   const chunks = chunkText(text, { maxChars: 200, overlapChars: 0, maxChunks: 5 })
-  assert.equal(chunks.length, 5)
+  assert.ok(chunks.length <= 5)
+  const recombined = chunks.join('\n')
+  for (let i = 0; i < 60; i++) {
+    assert.ok(recombined.includes(`para ${i} `), `lost para ${i}`)
+  }
 })
 
 test('dedupeChunks removes whitespace/case duplicates preserving order', () => {

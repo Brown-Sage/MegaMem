@@ -64,8 +64,10 @@ const compileProfile = async (sessionId, memories) => {
 // Returns a cached profile if fresh enough, otherwise recompiles.
 // A profile is stale when enough new memories have accumulated since the
 // last compile, or when a forced refresh is requested.
+const ACTIVE_FILTER = { status: 'active' }
+
 const getProfile = async (sessionId, { force = false } = {}) => {
-  const memoryCount = await Memory.countDocuments({ sessionId })
+  const memoryCount = await Memory.countDocuments({ sessionId, ...ACTIVE_FILTER })
   if (memoryCount < MIN_MEMORIES_FOR_PROFILE) {
     return null
   }
@@ -79,7 +81,7 @@ const getProfile = async (sessionId, { force = false } = {}) => {
     }
   }
 
-  const memories = await Memory.find({ sessionId })
+  const memories = await Memory.find({ sessionId, ...ACTIVE_FILTER })
     .sort({ createdAt: -1 })
     .limit(100)
     .select('text')

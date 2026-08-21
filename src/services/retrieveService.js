@@ -53,12 +53,16 @@ const searchVector = async (sessionId, queryEmbedding, topK) => {
         text: 1,
         sessionId: 1,
         type: 1,
+        status: 1,
+        eventAt: 1,
         score: { $meta: 'vectorSearchScore' }
       }
     }
   ])
 
-  return results
+  // Post-filter on status — see note in conflictService: 'status' is not a
+  // filter path in the Search index, so filtering happens after retrieval.
+  return results.filter((memory) => !memory.status || memory.status === 'active')
 }
 
 const searchLexical = async (query, sessionIds, topK) => {
@@ -69,6 +73,7 @@ const searchLexical = async (query, sessionIds, topK) => {
 
   return Memory.find({
     sessionId: { $in: sessionIds },
+    status: 'active',
     text: { $regex: pattern, $options: 'i' }
   })
     .select('text sessionId type')
