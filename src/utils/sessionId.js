@@ -2,7 +2,7 @@ const path = require('path')
 const crypto = require('crypto')
 const { TECHNICAL_MEMORY_TYPES } = require('../constants/memoryTypes')
 
-const DEFAULT_SESSION_ID = 'aryan-main'
+const DEFAULT_SESSION_ID = 'default-user'
 
 const uniqueIds = (...ids) => [...new Set(ids.filter(Boolean))]
 

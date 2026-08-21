@@ -4,7 +4,7 @@ const { MEMORY_TYPES } = require('../constants/memoryTypes')
 const MEMORY_STATUSES = ['active', 'superseded', 'deleted']
 
 const memorySchema = new mongoose.Schema({
-  sessionId: { type: String, required: true, default: 'aryan-main' },
+  sessionId: { type: String, required: true, default: 'default-user' },
   text: { type: String, required: true },
   type: { type: String, enum: MEMORY_TYPES, default: 'other' },
   embedding: { type: [Number], required: true },

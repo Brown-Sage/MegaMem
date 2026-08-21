@@ -4,7 +4,7 @@ const { computeDedupKey } = require('../../src/utils/dedupKey')
 
 test('dedupKey is case and whitespace insensitive', () => {
   assert.equal(computeDedupKey('Uses  Vim'), computeDedupKey('uses vim'))
-  assert.equal(computeDedupKey('  Aryan   uses   arch '), 'aryan uses arch')
+  assert.equal(computeDedupKey('  Sam   uses   arch '), 'sam uses arch')
 })
 
 test('dedupKey strips punctuation', () => {

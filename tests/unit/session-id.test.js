@@ -25,9 +25,9 @@ afterEach(() => {
   else process.env.MEGAMEM_WORKSPACE_ID = savedEnv.workspaceId
 })
 
-test('userSessionId defaults to aryan-main', () => {
-  assert.equal(userSessionId(), 'aryan-main')
-  assert.equal(DEFAULT_SESSION_ID, 'aryan-main')
+test('userSessionId defaults to default-user', () => {
+  assert.equal(userSessionId(), 'default-user')
+  assert.equal(DEFAULT_SESSION_ID, 'default-user')
 })
 
 test('userSessionId honors MEGAMEM_USER_ID', () => {
@@ -54,11 +54,11 @@ test('resolveSessionIds with explicit id collapses both layers onto it', () => {
 })
 
 test('resolveSessionIds default returns distinct user + workspace layers', () => {
-  process.env.MEGAMEM_USER_ID = 'aryan-main'
+  process.env.MEGAMEM_USER_ID = 'default-user'
   const layers = resolveSessionIds(undefined, '/tmp/opencode')
   assert.equal(layers.explicit, null)
   assert.equal(layers.ids.length, 2)
-  assert.ok(layers.ids.includes('aryan-main'))
+  assert.ok(layers.ids.includes('default-user'))
   assert.ok(layers.ids.includes(layers.workspaceId))
 })
 

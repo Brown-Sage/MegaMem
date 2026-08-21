@@ -61,7 +61,7 @@ const buildExtractionMessages = ({ conversation, maxMemories, context }) => [
       '- "Caroline went to the LGBTQ support group on 7 May 2023 and found it powerful."',
       '- "Melanie signed up for a pottery class on 2 July 2023 to destress after work."',
       '- "The team dropped MongoDB for Postgres because vector search pricing was too high."',
-      '- "Aryan prefers tabs over spaces and always wants tests before refactoring."',
+      '- "Sam prefers tabs over spaces and always wants tests before refactoring."',
       '',
       'BAD memories (vague summaries that lose detail):',
       '- "Caroline values community and creative outlets."',

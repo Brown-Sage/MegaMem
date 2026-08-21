@@ -12,7 +12,7 @@ const run = async () => {
   const workspaceId = `layer_ws_${Date.now()}`
   const token = `install:mcp-${Date.now()}`
 
-  await saveMemory('Aryan loves bhindi ki sabzi in layer tests', userId, 'preference')
+  await saveMemory('Sam loves bhindi ki sabzi in layer tests', userId, 'preference')
   await saveMemory(`Use ${token} to write Cursor user MCP config`, workspaceId, 'decision')
 
   const merged = await retrieveMemory(

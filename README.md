@@ -9,7 +9,7 @@ MegaMem is an MCP-first memory server that plugs into Claude Code, Cursor, and a
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 [![MCP](https://img.shields.io/badge/Protocol-MCP-blueviolet)](https://modelcontextprotocol.io)
 [![MongoDB](https://img.shields.io/badge/MongoDB-Atlas%20Vector%20Search-47A248?logo=mongodb&logoColor=white)](https://www.mongodb.com/atlas)
-[![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 </div>
 
@@ -86,11 +86,17 @@ Retrieval runs the same path in reverse: your question is embedded, the most rel
 ## 🏁 Quickstart
 
 ```bash
-git clone https://github.com/<you>/megamem.git
+git clone https://github.com/Brown-Sage/MegaMem.git
 cd megamem
 npm install
 cp .env.example .env   # fill in your keys
 ```
+
+**Prerequisites**
+
+- Node.js 18+
+- A free [MongoDB Atlas](https://www.mongodb.com/atlas) cluster (M0 free tier works)
+- Free API keys: [Groq](https://console.groq.com/keys) (LLM) and [Hugging Face](https://huggingface.co/settings/tokens) (embeddings)
 
 **Environment variables**
 
@@ -100,7 +106,28 @@ cp .env.example .env   # fill in your keys
 | `GROQ_API_KEY` | Groq API key (chat completions) |
 | `HUGGINGFACE_API_KEY` | Hugging Face key (embeddings) |
 
-Vector retrieval expects a MongoDB Atlas vector search index named `vector_index` on the `memories` collection.
+### Create the Atlas vector index
+
+Retrieval expects a MongoDB Atlas **Vector Search** index named `vector_index` on the `memories` collection:
+
+1. In Atlas, open your cluster → **Atlas Search & Vector Search** tab → **Create Search Index**
+2. Choose **JSON Editor** (not the visual builder)
+3. Select the `memories` database/collection, name the index `vector_index`, and paste:
+
+```json
+{
+  "fields": [
+    { "type": "vector", "path": "embedding", "numDimensions": 384, "similarity": "cosine" },
+    { "type": "filter", "path": "sessionId" }
+  ]
+}
+```
+
+(The same definition ships in [`atlas-vector-index.json`](atlas-vector-index.json).)
+
+> ⚠️ **Security note:** the HTTP and SSE transports (`POST /chat`, `/mcp`, `/mcp/sse`) are unauthenticated — run them on localhost or a trusted network only. The MCP stdio transport (Cursor / Claude Code) is the recommended integration path; it runs entirely on your machine.
+>
+> 🔒 **Your data stays yours:** memories live in *your* Atlas cluster, and LLM/embedding calls go to Groq and Hugging Face with your own keys. No third-party memory service sees anything.
 
 ## 🔌 Connect Your Assistant
 
@@ -171,30 +198,29 @@ MegaMem/
 │   │   ├── groqService.js      # Groq client (retry, timeouts, semaphore)
 │   │   └── promptService.js    # Prompt templates
 │   └── utils/
-│       ├── chunker.js          # Text chunking (bounded output)
+│       ├── chunker.js          # Text chunking (lossless bounded output)
+│       ├── temporal.js         # Deterministic date resolution
+│       ├── dedupKey.js         # Normalized duplicate detection keys
+│       ├── recentWrites.js     # In-memory write buffer (race protection)
 │       ├── tokenGuard.js       # Input size guards
 │       ├── json.js             # JSON helpers
-│       └── log.js              # Quiet logging
-├── tests/                      # Smoke tests for every stage of the pipeline
-└── benchmarks/                 # LoCoMo benchmark harness (ignored by git)
+│       └── log.js              # Structured logging (pino, stderr)
+├── tests/unit/                 # Offline unit tests (no network needed)
+└── benchmarks/                 # LoCoMo eval harness (contributor-facing)
 ```
 
-## 🧪 Smoke Tests
+## 🧪 Tests
 
-Every stage of the pipeline has a runnable test:
+**Unit tests** run fully offline (LLM and embedding clients are mocked):
 
 ```bash
-npm run test:embed      # embeddings
-npm run test:groq       # Groq chat completions
-npm run test:save       # memory save + conflict detection
-npm run test:retrieve   # vector search
-npm run test:extract    # bulk extraction pipeline
-npm run test:conflict   # conflict resolution
-npm run test:chunk      # chunker
-npm run test:guard      # token guard
-npm run test:http       # HTTP API
-npm run test:mcp        # MCP server end-to-end
+npm test        # 88 tests — conflict logic, chunker, temporal, validation, routing…
+npm run lint    # eslint
 ```
+
+Live smoke tests for every pipeline stage also exist under `tests/` (`npm run test:save`, `test:retrieve`, `test:mcp`, …) — these call real APIs and need keys in `.env`.
+
+The LoCoMo evaluation harness (`benchmarks/locomo/runEval.js`, `npm run eval:locomo`) is contributor-facing; it requires downloading the [LoCoMo dataset](https://github.com/snap-research/locomo) separately.
 
 ## 🗺️ Roadmap
 
