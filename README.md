@@ -105,6 +105,17 @@ cp .env.example .env   # fill in your keys
 | `MONGO_URI` | MongoDB Atlas connection string |
 | `GROQ_API_KEY` | Groq API key (chat completions) |
 | `HUGGINGFACE_API_KEY` | Hugging Face key (embeddings) |
+| `MEGAMEM_USER_ID` | Optional. Owner id for your memories (defaults to `default-user`) |
+| `MEGAMEM_WORKSPACE_ID` | Optional. Override the workspace layer id (defaults to `<folder>-<hash of cwd>`) |
+| `GROQ_MODEL` | Optional. Override the LLM (default `openai/gpt-oss-20b`) |
+
+### Verify everything works
+
+```bash
+npm run doctor
+```
+
+Checks Node version, your `.env`, the MongoDB/Atlas connection, that the `vector_index` search index has the right fields, and that the Hugging Face + Groq endpoints respond with your keys. Fix any ✖ items it prints before continuing.
 
 ### Create the Atlas vector index
 
@@ -118,12 +129,15 @@ Retrieval expects a MongoDB Atlas **Vector Search** index named `vector_index` o
 {
   "fields": [
     { "type": "vector", "path": "embedding", "numDimensions": 384, "similarity": "cosine" },
-    { "type": "filter", "path": "sessionId" }
+    { "type": "filter", "path": "sessionId" },
+    { "type": "filter", "path": "userId" }
   ]
 }
 ```
 
 (The same definition ships in [`atlas-vector-index.json`](atlas-vector-index.json).)
+
+> **Already running an older MegaMem?** If your index was created before `userId` existed, edit it: **Atlas Search & Vector Search** → `vector_index` → **Edit Index Definition** → add `{ "type": "filter", "path": "userId" }` to `fields` → save. Atlas rebuilds the index automatically (a few minutes on M0); searches keep working during the rebuild. Until this field is added, `$vectorSearch` ignores the owner filter — regular queries are unaffected. Verify with `npm run doctor`.
 
 > ⚠️ **Security note:** the HTTP and SSE transports (`POST /chat`, `/mcp`, `/mcp/sse`) are unauthenticated — run them on localhost or a trusted network only. The MCP stdio transport (Cursor / Claude Code) is the recommended integration path; it runs entirely on your machine.
 >
@@ -178,6 +192,31 @@ npm start
 | `GET /mcp/sse` | MCP over Server-Sent Events |
 | `GET /tools` | List available memory tools |
 
+## 🐳 Docker
+
+Run the HTTP server in a container (MongoDB Atlas stays external — `$vectorSearch` requires it):
+
+```bash
+cp .env.example .env   # fill in MONGO_URI + keys
+docker compose up --build -d
+curl localhost:3000/tools   # smoke check
+```
+
+For the MCP stdio transport under Docker (less common — stdio is usually run on the host):
+
+```bash
+docker build -t megamem .
+docker run --rm --env-file .env -i megamem node src/mcpServer.js
+```
+
+## 🔧 Troubleshooting
+
+- **`npm run doctor` says `vector_index lacks "userId"`** — edit your index definition per the note above; Atlas rebuilds it automatically.
+- **Semantic search returns nothing but exact search works** — Atlas Search indexes take a few minutes to build after creation, and newly written memories are searchable only after indexing (~3s). The recent-writes buffer hides this during rapid saves.
+- **Groq 404 / model errors** — MegaMem defaults to `openai/gpt-oss-20b`. Set `GROQ_MODEL` to override if you prefer another model available on your Groq account.
+- **Hugging Face 503** — the embedding model is cold/warming; retry in a minute.
+- **Memories from another project leak into this one** — they won't: workspace memories are keyed by `<folder>-<hash(cwd)>`, and everything is scoped by `MEGAMEM_USER_ID`. Check both env vars if you *want* sharing between two folders.
+
 ## 🏗️ Project Structure
 
 ```
@@ -227,8 +266,9 @@ The LoCoMo evaluation harness (`benchmarks/locomo/runEval.js`, `npm run eval:loc
 - [x] Automatic memory pipeline (extract → dedup → conflict-detect → persist)
 - [x] MCP server with stdio, HTTP, and SSE transports
 - [x] Self-directing tool descriptions (agents use memory proactively)
-- [ ] Multi-user support (auth + per-user memory isolation)
-- [ ] Deployment packaging (Docker, hosted offering)
+- [x] Two-layer memory (user + workspace) with per-owner scoping (`MEGAMEM_USER_ID`)
+- [x] One-command setup doctor (`npm run doctor`) + Docker packaging
+- [ ] Fully-local mode without Atlas ($vectorSearch currently requires MongoDB Atlas)
 - [ ] Memory dashboard / UI
 
 ## 🧱 Built With

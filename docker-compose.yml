@@ -1,0 +1,21 @@
+services:
+  megamem:
+    build: .
+    image: megamem:latest
+    container_name: megamem
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    # App-only container: MongoDB Atlas is external ($vectorSearch requires Atlas).
+    # Set MONGO_URI in .env to your Atlas connection string.
+    environment:
+      - NODE_ENV=production
+      # Keep the process restart-friendly; state lives in Atlas.
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/tools').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

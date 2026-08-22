@@ -9,6 +9,10 @@
     {
       "type": "filter",
       "path": "sessionId"
+    },
+    {
+      "type": "filter",
+      "path": "userId"
     }
   ]
 }
