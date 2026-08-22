@@ -38,3 +38,6 @@ benchmarks/locomo/*.json
 # Cursor local MCP config (contains machine-specific absolute paths)
 .cursor/mcp.json
 
+# Local progress tracking
+progress.md
+
