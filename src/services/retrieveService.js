@@ -1,5 +1,6 @@
 const Memory = require('../models/Memory')
 const { embedText } = require('./embedService')
+const { currentUserId } = require('../utils/ownership')
 const { userSessionId, workspaceSessionId, layerLabel } = require('../utils/sessionId')
 
 // Atlas $vectorSearchScore for cosine similarity is 0..1 (0.5 = orthogonal).
@@ -45,7 +46,9 @@ const searchVector = async (sessionId, queryEmbedding, topK) => {
         queryVector: queryEmbedding,
         numCandidates: 50,
         limit: topK,
-        filter: { sessionId }
+        // userId must be a filter field in the Atlas Search index for this
+        // to actually constrain results — keep vector_index definition in sync.
+        filter: { sessionId, userId: currentUserId() }
       }
     },
     {
@@ -72,6 +75,7 @@ const searchLexical = async (query, sessionIds, topK) => {
   const pattern = tokens.map(escapeRegex).join('|')
 
   return Memory.find({
+    userId: currentUserId(),
     sessionId: { $in: sessionIds },
     status: 'active',
     text: { $regex: pattern, $options: 'i' }

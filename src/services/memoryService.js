@@ -2,6 +2,7 @@ const Memory = require('../models/Memory')
 const MemoryHistory = require('../models/MemoryHistory')
 const { embedText } = require('./embedService')
 const { computeDedupKey } = require('../utils/dedupKey')
+const { currentUserId } = require('../utils/ownership')
 const { child } = require('../utils/log')
 const { MEMORY_TYPES } = require('../constants/memoryTypes')
 
@@ -23,6 +24,7 @@ const recordHistory = ({ memoryId, sessionId, event, oldMemory = null, newMemory
 const saveMemory = async (text, sessionId, type = 'other', { actor = 'mcp', eventAt = null, embedding = null } = {}) => {
   const vector = embedding || await embedText(text)
   const memory = new Memory({
+    userId: currentUserId(),
     sessionId,
     text,
     type: normalizeType(type),
@@ -43,7 +45,7 @@ const saveMemory = async (text, sessionId, type = 'other', { actor = 'mcp', even
 }
 
 const updateMemory = async (memoryId, text, type, { actor = 'mcp', embedding = null } = {}) => {
-  const existing = await Memory.findById(memoryId)
+  const existing = await Memory.findOne({ _id: memoryId, userId: currentUserId() })
   if (!existing) {
     throw new Error(`Memory not found for update: ${memoryId}`)
   }
@@ -74,8 +76,8 @@ const updateMemory = async (memoryId, text, type, { actor = 'mcp', embedding = n
 // Soft-delete: keeps the document retrievable by id (audit/undo) while every
 // read path filters on status:'active'.
 const deleteMemory = async (memoryId, { reason = '', actor = 'mcp' } = {}) => {
-  const memory = await Memory.findByIdAndUpdate(
-    memoryId,
+  const memory = await Memory.findOneAndUpdate(
+    { _id: memoryId, userId: currentUserId() },
     {
       status: 'deleted',
       deletedAt: new Date(),

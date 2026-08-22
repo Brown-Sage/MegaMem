@@ -2,6 +2,7 @@ const Memory = require('../models/Memory')
 const { embedText } = require('./embedService')
 const { completeChat } = require('./groqService')
 const { parseJsonObject } = require('../utils/json')
+const { currentUserId } = require('../utils/ownership')
 
 const CONFLICT_ACTIONS = ['create', 'update', 'skip', 'delete']
 
@@ -16,7 +17,7 @@ const findSimilarMemories = async ({ text, sessionId, topK = 8, minScore = 0.45,
         queryVector: queryVector,
         numCandidates: 50,
         limit: topK,
-        filter: { sessionId }
+        filter: { sessionId, userId: currentUserId() }
       }
     },
     {
@@ -128,7 +129,7 @@ const detectMemoryConflict = async ({ memory, sessionId, topK = 8, minScore = 0.
   const seenIds = new Set(candidates.map(c => c.id))
   for (const rc of extraCandidates) {
     if (!rc || !rc.memoryId || seenIds.has(String(rc.memoryId))) continue
-    const doc = await Memory.findById(rc.memoryId)
+    const doc = await Memory.findOne({ _id: rc.memoryId, userId: currentUserId() })
       .select('text status eventAt createdAt')
       .lean()
     if (!doc || (doc.status && doc.status !== 'active')) continue

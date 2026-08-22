@@ -1,9 +1,13 @@
 const mongoose = require('mongoose')
 const { MEMORY_TYPES } = require('../constants/memoryTypes')
+const { DEFAULT_USER_ID } = require('../utils/ownership')
 
 const MEMORY_STATUSES = ['active', 'superseded', 'deleted']
 
 const memorySchema = new mongoose.Schema({
+  // Owner of the memory — always stamped server-side from MEGAMEM_USER_ID
+  // (see src/utils/ownership). Clients cannot set or override it.
+  userId: { type: String, required: true, default: DEFAULT_USER_ID },
   sessionId: { type: String, required: true, default: 'default-user' },
   text: { type: String, required: true },
   type: { type: String, enum: MEMORY_TYPES, default: 'other' },
@@ -18,9 +22,9 @@ const memorySchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 })
 
-memorySchema.index({ sessionId: 1, text: 1 })
-memorySchema.index({ sessionId: 1, status: 1 })
-memorySchema.index({ sessionId: 1, dedupKey: 1 })
+memorySchema.index({ userId: 1, sessionId: 1, text: 1 })
+memorySchema.index({ userId: 1, sessionId: 1, status: 1 })
+memorySchema.index({ userId: 1, sessionId: 1, dedupKey: 1 })
 
 module.exports = mongoose.model('Memory', memorySchema)
 module.exports.MEMORY_STATUSES = MEMORY_STATUSES

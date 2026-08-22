@@ -2,6 +2,7 @@ const Memory = require('../models/Memory')
 const Profile = require('../models/Profile')
 const { completeChat } = require('./groqService')
 const { parseJsonObject } = require('../utils/json')
+const { currentUserId } = require('../utils/ownership')
 const { log } = require('../utils/log')
 
 const MIN_MEMORIES_FOR_PROFILE = 3
@@ -48,8 +49,9 @@ const compileProfile = async (sessionId, memories) => {
   }
 
   await Profile.findOneAndUpdate(
-    { sessionId },
+    { userId: currentUserId(), sessionId },
     {
+      userId: currentUserId(),
       sessionId,
       text: profile,
       memoryCount: memories.length,
@@ -67,12 +69,13 @@ const compileProfile = async (sessionId, memories) => {
 const ACTIVE_FILTER = { status: 'active' }
 
 const getProfile = async (sessionId, { force = false } = {}) => {
-  const memoryCount = await Memory.countDocuments({ sessionId, ...ACTIVE_FILTER })
+  const ownerFilter = { sessionId, userId: currentUserId() }
+  const memoryCount = await Memory.countDocuments({ ...ownerFilter, ...ACTIVE_FILTER })
   if (memoryCount < MIN_MEMORIES_FOR_PROFILE) {
     return null
   }
 
-  const cached = await Profile.findOne({ sessionId }).lean()
+  const cached = await Profile.findOne({ userId: currentUserId(), sessionId }).lean()
 
   if (!force && cached) {
     const newSinceCompile = memoryCount - (cached.memoryCount || 0)
@@ -81,7 +84,7 @@ const getProfile = async (sessionId, { force = false } = {}) => {
     }
   }
 
-  const memories = await Memory.find({ sessionId, ...ACTIVE_FILTER })
+  const memories = await Memory.find({ ...ownerFilter, ...ACTIVE_FILTER })
     .sort({ createdAt: -1 })
     .limit(100)
     .select('text')

@@ -9,6 +9,7 @@ const { computeDedupKey } = require('../utils/dedupKey')
 const { recordWrite, checkRecentDuplicate, getRecentCandidates } = require('../utils/recentWrites')
 const { validate, toolArgsSchema } = require('../validation/schemas')
 const { resolveSessionIds, targetSessionId, layerLabel } = require('../utils/sessionId')
+const { currentUserId } = require('../utils/ownership')
 const { MEMORY_TYPES } = require('../constants/memoryTypes')
 const Memory = require('../models/Memory')
 
@@ -176,7 +177,7 @@ const callMemorySave = async (args) => {
   const embedding = await embedText(text)
 
   // Layer 1 — exact duplicate (case/punctuation insensitive, DB-indexed).
-  const existing = await Memory.findOne({ sessionId, dedupKey, status: 'active' })
+  const existing = await Memory.findOne({ userId: currentUserId(), sessionId, dedupKey, status: 'active' })
   if (existing) {
     return toolCallText(JSON.stringify({
       action: 'skip',
@@ -269,7 +270,7 @@ const callMemoryExtract = async (args) => {
 const callMemoryList = async (args) => {
   const { limit = 20, cursor } = args
   const layers = resolveSessionIds(args.sessionId)
-  const filter = { sessionId: { $in: layers.ids }, status: 'active' }
+  const filter = { userId: currentUserId(), sessionId: { $in: layers.ids }, status: 'active' }
 
   if (cursor) {
     try {
@@ -311,7 +312,7 @@ const callMemoryDelete = async (args) => {
     throw new Error('memory_delete requires memoryId')
   }
 
-  const result = await Memory.findByIdAndDelete(memoryId)
+  const result = await Memory.findOneAndDelete({ _id: memoryId, userId: currentUserId() })
 
   if (!result) {
     throw new Error(`Memory not found: ${memoryId}`)
