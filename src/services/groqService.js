@@ -1,4 +1,5 @@
 const Groq = require('groq-sdk')
+const OpenAI = require('openai')
 const { child } = require('../utils/log')
 
 const log = child('groq')
@@ -6,19 +7,74 @@ const log = child('groq')
 // Lazily constructed so requiring this module never needs an API key
 // (unit tests run offline). __setClient overrides everything for tests.
 let overrideClient = null
-let defaultClient = null
+const clients = new Map()
+
+// --- Multi-provider routing ---
+// All providers speak OpenAI-compatible /chat/completions and work through the
+// groq-sdk client with just an apiKey/baseURL switch. Groq stays the prod
+// default; MEGAMEM_LLM_PROVIDER routes eval bursts to a bigger free bucket
+// (e.g. Mistral's ~1B tokens/month) without touching call sites.
+const PROVIDERS = {
+  groq: {
+    apiKeyEnv: 'GROQ_API_KEY',
+    baseURL: undefined,
+    defaultModel: 'openai/gpt-oss-20b'
+  },
+  mistral: {
+    apiKeyEnv: 'MISTRAL_API_KEY',
+    baseURL: 'https://api.mistral.ai/v1',
+    defaultModel: 'mistral-small-latest',
+    sdk: 'openai'
+  },
+  cerebras: {
+    apiKeyEnv: 'CEREBRAS_API_KEY',
+    baseURL: 'https://api.cerebras.ai/v1',
+    defaultModel: 'llama3.1-8b',
+    sdk: 'openai'
+  }
+}
+
+const resolveProviderName = () => {
+  const requested = (process.env.MEGAMEM_LLM_PROVIDER || 'groq').toLowerCase()
+  if (!PROVIDERS[requested]) {
+    throw new Error(
+      `Unknown MEGAMEM_LLM_PROVIDER '${requested}'. Valid: ${Object.keys(PROVIDERS).join(', ')}`
+    )
+  }
+  return requested
+}
+
+const getProviderConfig = () => PROVIDERS[resolveProviderName()]
 
 const getClient = () => {
   if (overrideClient) return overrideClient
-  if (!defaultClient) defaultClient = new Groq({ apiKey: process.env.GROQ_API_KEY })
-  return defaultClient
+  const providerName = resolveProviderName()
+  if (!clients.has(providerName)) {
+    const config = PROVIDERS[providerName]
+    const apiKey = process.env[config.apiKeyEnv]
+    if (!apiKey) {
+      throw new Error(`${config.apiKeyEnv} is not set (required for provider '${providerName}')`)
+    }
+    // groq-sdk posts to its own /openai/v1/... path prefix, which only exists
+    // on Groq — other providers get the generic OpenAI SDK pointed at their
+    // OpenAI-compatible /v1 endpoint.
+    clients.set(
+      providerName,
+      config.sdk === 'openai'
+        ? new OpenAI({ apiKey, baseURL: config.baseURL, maxRetries: 0 })
+        : new Groq({ apiKey, baseURL: config.baseURL })
+    )
+  }
+  return clients.get(providerName)
 }
 
 const __setClient = (next) => { overrideClient = next }
 
-// llama-3.3-70b-versatile was retired by Groq. openai/gpt-oss-20b returns
-// clean JSON without reasoning-token leakage, so it is the default.
-const DEFAULT_MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-20b'
+// gpt-oss models are reasoners on Groq; other providers' models are plain
+// chat models. Reasoning effort is only sent when the selected model matches.
+// Resolved at call time so MEGAMEM_JUDGE_PROVIDER-style env switches work
+// mid-process (see benchmarks/locomo/runEval.js).
+const getDefaultModel = () => process.env.GROQ_MODEL || getProviderConfig().defaultModel
 
 // --- Groq concurrency limiter (semaphore) ---
 const MAX_CONCURRENT_GROQ = 3
@@ -120,7 +176,7 @@ const resolveReasoningEffort = (model, requested) => {
 const completeChat = async (messages, options = {}) => {
   const maxRetries = options.maxRetries ?? 2
   const timeoutMs = options.timeoutMs ?? 10000
-  const model = options.model || DEFAULT_MODEL
+  const model = options.model || getDefaultModel()
   let lastError
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -169,4 +225,4 @@ const completeChat = async (messages, options = {}) => {
   throw lastError
 }
 
-module.exports = { chat, completeChat, isRetryableError, DEFAULT_MODEL, __setClient }
+module.exports = { chat, completeChat, isRetryableError, getDefaultModel, __setClient }
