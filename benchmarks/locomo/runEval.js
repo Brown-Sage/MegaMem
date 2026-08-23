@@ -72,14 +72,43 @@ const SKIP_INGEST = hasFlag('skip-ingest')
 const RESUME = hasFlag('resume')
 const DATA_PATH = getFlag('data') || path.join(__dirname, 'locomo10.json')
 const RESULTS_DIR = path.join(__dirname, '..', 'results')
-const CHECKPOINT_PATH = path.join(__dirname, 'eval-checkpoint.json')
+// Per-conversation checkpoint files — parallel conversations must not clobber
+// each other's progress, and resume must pick the right scope.
+const CHECKPOINT_PATH = (convIdx) => path.join(__dirname, `eval-checkpoint-conv${convIdx}.json`)
+const INGEST_CHECKPOINT_PATH = (convIdx) => path.join(__dirname, `eval-ingest-checkpoint-conv${convIdx}.json`)
+// Official full-dataset run: all 10 conversations, all sessions, one result set.
+// Ingest is sequential per conversation; QA scoring runs per conversation right
+// after its ingest so checkpoint/resume stays conversation-scoped.
+const ALL_CONVS = hasFlag('all-convs')
+// Parallelism: conversations are independent (separate sessionIds), sessions
+// within a conversation are chunk-independent, retrieval is read-only, and
+// judge batches write disjoint checkpoint entries. Providers rate-limit per
+// account, so the global LLM semaphore in groqService.js is the real throttle.
+const CONV_CONCURRENCY = Math.max(1, parseInt(getFlag('convs') || '4', 10))
+const SESSION_CONCURRENCY = Math.max(1, parseInt(getFlag('session-conc') || '2', 10))
+const RETRIEVAL_CONCURRENCY = Math.max(1, parseInt(getFlag('retrieve-conc') || '6', 10))
+const JUDGE_CONCURRENCY = Math.max(1, parseInt(getFlag('judge-conc') || '3', 10))
 
-let SESSION_ID
-if (SKIP_INGEST && getFlag('session-id')) {
-  SESSION_ID = getFlag('session-id')
-} else {
-  SESSION_ID = `locomo-eval-conv${CONV_INDEX}-${Date.now()}`
+// Run a task producer with a bounded worker pool; preserves result order.
+const mapPool = async (items, limit, worker) => {
+  const results = new Array(items.length)
+  let next = 0
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const idx = next++
+      if (idx >= items.length) return
+      results[idx] = await worker(items[idx], idx)
+    }
+  })
+  await Promise.all(workers)
+  return results
 }
+
+// Single-conversation runs can pin an explicit sessionId (--skip-ingest
+// --session-id ...). All-convs runs derive deterministic per-conversation ids.
+const SESSION_ID = (SKIP_INGEST && getFlag('session-id'))
+  ? getFlag('session-id')
+  : `locomo-eval-conv${CONV_INDEX}-${Date.now()}`
 
 const CATEGORY_NAMES = {
   1: 'single-hop',
@@ -338,12 +367,13 @@ const summarize = (rows) => {
 const renderMarkdown = (meta, summary, failures) => {
   const pct = (c, t) => t ? `${c}/${t} (+${(c / t * 100).toFixed(1)}%)`.replace('+', '') : 'n/a'
   const lines = []
-  lines.push(`# LoCoMo eval — ${meta.label} — conv ${meta.convIndex} (${meta.skipIngest ? 'rescored' : 'full ingest'})`)
+  lines.push(`# LoCoMo eval — ${meta.label} — conv ${meta.convIndex}${meta.skipIngest ? ' (rescored)' : ''}`)
   lines.push('')
   lines.push(`- **Date:** ${meta.date}`)
-  lines.push(`- **SessionId:** \`${meta.sessionId}\``)
-  lines.push(`- **Memories stored:** ${meta.memoryCount}`)
-  lines.push(`- **Sessions ingested:** ${meta.sessionsIngested}`)
+  if (meta.sessionId) lines.push(`- **SessionId:** \`${meta.sessionId}\``)
+  if (meta.memoryCount != null) lines.push(`- **Memories stored:** ${meta.memoryCount}`)
+  if (meta.sessionsIngested != null) lines.push(`- **Sessions ingested:** ${meta.sessionsIngested}`)
+  if (meta.conversations != null) lines.push(`- **Conversations:** ${meta.conversations}`)
   lines.push(`- **QA pairs evaluated:** ${summary.total}`)
   lines.push('')
   lines.push('## Scores')
@@ -381,91 +411,146 @@ const renderMarkdown = (meta, summary, failures) => {
 
 // ---------- main ----------
 async function main () {
-  console.log(`[eval] conv=${CONV_INDEX} sessions=${SESSION_LIMIT || 'ALL'} label=${LABEL} skipIngest=${SKIP_INGEST}`)
-  console.log(`[eval] sessionId=${SESSION_ID}`)
+  console.log(`[eval] conv=${ALL_CONVS ? 'ALL' : CONV_INDEX} sessions=${SESSION_LIMIT || 'ALL'} label=${LABEL} skipIngest=${SKIP_INGEST}`)
+  console.log(`[eval] parallelism: convs=${CONV_CONCURRENCY} sessions=${SESSION_CONCURRENCY} retrieval=${RETRIEVAL_CONCURRENCY} judge=${JUDGE_CONCURRENCY}`)
 
   const raw = fs.readFileSync(path.resolve(DATA_PATH), 'utf-8')
   const data = JSON.parse(raw)
-  if (CONV_INDEX >= data.length) {
+  if (!ALL_CONVS && CONV_INDEX >= data.length) {
     throw new Error(`Conversation index ${CONV_INDEX} out of range (dataset has ${data.length})`)
   }
-  const conv = data[CONV_INDEX]
 
   const mongoUri = process.env.MONGO_URI || process.env.MONGODB_URI
   if (!mongoUri) throw new Error('No MONGO_URI or MONGODB_URI found in .env')
   await mongoose.connect(mongoUri)
   console.log('[eval] connected to MongoDB')
 
-  // ---- ingest ----
-  let sessionsIngested = 0
-  let ingestKeys = []
-  const INGEST_CHECKPOINT_PATH = path.join(__dirname, 'eval-ingest-checkpoint.json')
+  const convIndexes = ALL_CONVS
+    ? data.map((_, i) => i)
+    : [CONV_INDEX]
 
-  // Session-level checkpointing so a quota trip mid-ingest is resumable.
+  // Deterministic per-conversation sessionIds — a resumed run must land on the
+  // same store without consulting state that a crash could have lost.
+  const sessionIdFor = (convIdx) => `locomo-eval-conv${convIdx}-official`
+
+  // ---- phase 1: ingest all conversations with a bounded pool ----
+  if (!SKIP_INGEST) {
+    await mapPool(convIndexes, CONV_CONCURRENCY, async (convIdx) => {
+      await ingestConversation(data[convIdx], convIdx, sessionIdFor(convIdx))
+    })
+    console.log('[eval] all ingestion complete; waiting 8s for vector index to settle...')
+    await sleep(8000)
+  }
+
+  // ---- phase 2: score every conversation in parallel ----
+  const allConvRows = await mapPool(convIndexes, Math.max(CONV_CONCURRENCY, 2), async (convIdx) => ({
+    convIndex: convIdx,
+    rows: await scoreConversation(data[convIdx], convIdx, sessionIdFor(convIdx))
+  }))
+
+  // ---- combined report ----
+  if (allConvRows.length > 1) {
+    const combined = allConvRows.flatMap((c) => c.rows)
+    const summary = summarize(combined)
+    fs.mkdirSync(RESULTS_DIR, { recursive: true })
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16)
+    const baseName = `${stamp}-${LABEL}-ALL`
+    const jsonPath = path.join(RESULTS_DIR, `${baseName}.json`)
+    const mdPath = path.join(RESULTS_DIR, `${baseName}.md`)
+    const meta = {
+      date: new Date().toISOString(),
+      label: LABEL,
+      convIndex: 'all',
+      conversations: allConvRows.length,
+      totalQa: combined.length,
+      topK: TOP_K,
+      advThreshold: ADV_THRESHOLD
+    }
+    fs.writeFileSync(jsonPath, JSON.stringify({
+      meta,
+      summary,
+      perConversation: allConvRows.map((c) => ({
+        convIndex: c.convIndex,
+        summary: summarize(c.rows),
+        results: c.rows
+      }))
+    }, null, 2))
+    fs.writeFileSync(mdPath, renderMarkdown(meta, summary, combined.filter((r) => !r.correct)))
+    console.log('\n' + '='.repeat(60))
+    console.log(`ALL CONVERSATIONS: OVERALL ${summary.overallAccuracy}%  (non-adv ${summary.nonAdversarial.accuracy}%, adv-reject ${summary.adversarialRejection.accuracy}%)`)
+    for (const c of allConvRows) {
+      const s = summarize(c.rows)
+      console.log(`  conv ${c.convIndex}: ${s.overallAccuracy}% overall / ${s.nonAdversarial.accuracy}% non-adv / ${s.adversarialRejection.accuracy}% adv-reject (${s.total} QA)`)
+    }
+    console.log('='.repeat(60))
+    console.log(`Results: ${jsonPath}`)
+    console.log(`Report:  ${mdPath}`)
+  }
+
+  await mongoose.disconnect()
+}
+
+// Ingests every session of one conversation into its own sessionId.
+async function ingestConversation (conv, convIdx, sessionId) {
+  const cpPath = INGEST_CHECKPOINT_PATH(convIdx)
   let alreadyIngested = new Set()
-  if (RESUME && fs.existsSync(INGEST_CHECKPOINT_PATH)) {
+  if (RESUME && fs.existsSync(cpPath)) {
     try {
-      const icp = JSON.parse(fs.readFileSync(INGEST_CHECKPOINT_PATH, 'utf-8'))
-      if (icp.sessionId === SESSION_ID && icp.convIndex === CONV_INDEX) {
-        alreadyIngested = new Set(icp.ingested)
-        console.log(`[eval] ingest resume: ${alreadyIngested.size} sessions already done`)
-      }
+      const icp = JSON.parse(fs.readFileSync(cpPath, 'utf-8'))
+      if (icp.sessionId === sessionId) alreadyIngested = new Set(icp.ingested)
     } catch { /* fresh start */ }
   }
 
-  if (!SKIP_INGEST) {
-    const sessionKeys = Object.keys(conv.conversation)
-      .filter((k) => /^session_\d+$/.test(k))
-      .sort((a, b) => parseInt(a.split('_')[1], 10) - parseInt(b.split('_')[1], 10))
-    ingestKeys = SESSION_LIMIT > 0 ? sessionKeys.slice(0, SESSION_LIMIT) : sessionKeys
+  const sessionKeys = Object.keys(conv.conversation)
+    .filter((k) => /^session_\d+$/.test(k))
+    .sort((a, b) => parseInt(a.split('_')[1], 10) - parseInt(b.split('_')[1], 10))
+  const ingestKeys = SESSION_LIMIT > 0 ? sessionKeys.slice(0, SESSION_LIMIT) : sessionKeys
 
-    for (const sessionKey of ingestKeys) {
-      if (alreadyIngested.has(sessionKey)) {
-        sessionsIngested++
-        console.log(`[ingest] ${sessionKey} already done, skipping`)
-        continue
-      }
+  console.log(`[conv ${convIdx}] ingesting ${ingestKeys.length} sessions -> ${sessionId}`)
 
-      const sessionNum = sessionKey.split('_')[1]
-      const dateTime = conv.conversation[`session_${sessionNum}_date_time`] || 'unknown date'
-      const turns = conv.conversation[sessionKey]
-      const sessionText = buildSessionText(turns, dateTime)
-
-      const startedAt = Date.now()
-      console.log(`[ingest] ${sessionKey}: ${turns.length} turns, ${sessionText.length} chars...`)
-      try {
-        const results = await persistExtractedMemories({
-          conversation: sessionText,
-          sessionId: SESSION_ID
-        })
-        const saved = results.filter((r) => r.action === 'create' || r.action === 'update' || r.action === 'delete').length
-        sessionsIngested++
-        alreadyIngested.add(sessionKey)
-        fs.writeFileSync(INGEST_CHECKPOINT_PATH, JSON.stringify({
-          sessionId: SESSION_ID,
-          convIndex: CONV_INDEX,
-          ingested: [...alreadyIngested]
-        }))
-        console.log(`[ingest] ${sessionKey} done in ${Date.now() - startedAt}ms — ${saved} saved / ${results.length} extracted`)
-      } catch (err) {
-        console.error(`[ingest] ${sessionKey} FAILED: ${err.message}`)
-      }
-      await sleep(500)
+  let done = 0
+  await mapPool(ingestKeys, SESSION_CONCURRENCY, async (sessionKey) => {
+    if (alreadyIngested.has(sessionKey)) {
+      done++
+      return
     }
-    console.log('[eval] ingestion complete; waiting 6s for vector index to settle...')
-    await sleep(6000)
-  }
 
-  const memoryCount = await Memory.countDocuments({ sessionId: SESSION_ID })
-  console.log(`[eval] memories in session: ${memoryCount}`)
+    const sessionNum = sessionKey.split('_')[1]
+    const dateTime = conv.conversation[`session_${sessionNum}_date_time`] || 'unknown date'
+    const turns = conv.conversation[sessionKey]
+    const sessionText = buildSessionText(turns, dateTime)
+
+    const startedAt = Date.now()
+    try {
+      const results = await persistExtractedMemories({
+        conversation: sessionText,
+        sessionId
+      })
+      const saved = results.filter((r) => r.action === 'create' || r.action === 'update' || r.action === 'delete').length
+      alreadyIngested.add(sessionKey)
+      done++
+      fs.writeFileSync(cpPath, JSON.stringify({ sessionId, convIndex: convIdx, ingested: [...alreadyIngested] }))
+      console.log(`[conv ${convIdx}] ${sessionKey} done in ${Date.now() - startedAt}ms — ${saved} saved / ${results.length} extracted (${done}/${ingestKeys.length})`)
+    } catch (err) {
+      console.error(`[conv ${convIdx}] ${sessionKey} FAILED: ${err.message}`)
+    }
+  })
+
+  console.log(`[conv ${convIdx}] ingestion complete (${alreadyIngested.size}/${ingestKeys.length} sessions)`)
+}
+
+// Scores all answerable QA pairs for one conversation against its store.
+async function scoreConversation (conv, convIdx, sessionId) {
+
+  const memoryCount = await Memory.countDocuments({ sessionId })
+  console.log(`[conv ${convIdx}] memories in session: ${memoryCount}`)
 
   // ---- answerable QA pairs ----
   // Rescore mode (skip-ingest) assumes the full conversation was ingested.
   const ingestedSessionNumbers = new Set(
-    (SKIP_INGEST
-      ? Object.keys(conv.conversation).filter((k) => /^session_\d+$/.test(k))
-      : ingestKeys
-    ).map((k) => parseInt(k.split('_')[1], 10))
+    Object.keys(conv.conversation)
+      .filter((k) => /^session_\d+$/.test(k))
+      .map((k) => parseInt(k.split('_')[1], 10))
   )
   const answerableQa = conv.qa.filter((qa) => {
     if (!qa.evidence || qa.evidence.length === 0) return false
@@ -474,15 +559,16 @@ async function main () {
       return sessionNum !== null && ingestedSessionNumbers.has(sessionNum)
     })
   })
-  console.log(`[eval] ${answerableQa.length}/${conv.qa.length} QA pairs answerable`)
+  console.log(`[conv ${convIdx}] ${answerableQa.length}/${conv.qa.length} QA pairs answerable`)
 
   // ---- resume support ----
+  const cpPath = CHECKPOINT_PATH(convIdx)
   const completedByIndex = new Map()
-  if (RESUME && fs.existsSync(CHECKPOINT_PATH)) {
-    const cp = JSON.parse(fs.readFileSync(CHECKPOINT_PATH, 'utf-8'))
-    if (cp.sessionId === SESSION_ID && cp.convIndex === CONV_INDEX) {
+  if (RESUME && fs.existsSync(cpPath)) {
+    const cp = JSON.parse(fs.readFileSync(cpPath, 'utf-8'))
+    if (cp.sessionId === sessionId) {
       for (const entry of cp.scored) completedByIndex.set(entry.index, entry.result)
-      console.log(`[eval] resumed with ${completedByIndex.size} already-scored pairs`)
+      console.log(`[conv ${convIdx}] resumed with ${completedByIndex.size} already-scored pairs`)
     }
   }
   const saveCheckpoint = () => {
@@ -491,38 +577,43 @@ async function main () {
     const scored = [...completedByIndex.entries()]
       .filter(([, result]) => !['llm-judge-ambiguous', 'llm-judge-error'].includes(result.method))
       .map(([index, result]) => ({ index, result }))
-    fs.writeFileSync(CHECKPOINT_PATH, JSON.stringify({
-      sessionId: SESSION_ID,
-      convIndex: CONV_INDEX,
+    fs.writeFileSync(cpPath, JSON.stringify({
+      sessionId,
+      convIndex: convIdx,
       scored
     }))
   }
 
-  // ---- retrieval ----
+  // ---- retrieval (parallel; read-only so workers can overlap freely) ----
   const RETRIEVAL_TIMEOUT_MS = 45000
   const withTimeout = (promise, ms, label) => Promise.race([
     promise,
     new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms))
   ])
 
-  const prepared = []
+  const pendingIndexes = []
   for (let i = 0; i < answerableQa.length; i++) {
-    if (completedByIndex.has(i)) continue
+    if (!completedByIndex.has(i)) pendingIndexes.push(i)
+  }
+
+  let retrievedCount = 0
+  const prepared = await mapPool(pendingIndexes, RETRIEVAL_CONCURRENCY, async (i) => {
     const qa = answerableQa[i]
     const startedAt = Date.now()
     try {
       const memories = await withTimeout(
-        retrieveMemory(qa.question, SESSION_ID, TOP_K),
+        retrieveMemory(qa.question, sessionId, TOP_K),
         RETRIEVAL_TIMEOUT_MS,
         `retrieval for "${qa.question.slice(0, 40)}"`
       )
-      prepared.push({ index: i, qa, memories, retrievalMs: Date.now() - startedAt })
+      retrievedCount++
+      if (retrievedCount % 25 === 0) console.log(`[conv ${convIdx}] retrieved ${retrievedCount}/${pendingIndexes.length}`)
+      return { index: i, qa, memories, retrievalMs: Date.now() - startedAt }
     } catch (err) {
-      console.error(`[retrieve] QA ${i} failed: ${err.message}`)
-      prepared.push({ index: i, qa, memories: [], retrievalMs: Date.now() - startedAt, retrievalError: err.message })
+      console.error(`[conv ${convIdx}] QA ${i} retrieval failed: ${err.message}`)
+      return { index: i, qa, memories: [], retrievalMs: Date.now() - startedAt, retrievalError: err.message }
     }
-    if ((i + 1) % 25 === 0) console.log(`[retrieve] ${i + 1}/${answerableQa.length}`)
-  }
+  })
 
   // ---- score adversarial pairs (free) ----
   const adversarial = prepared.filter((p) => p.qa.category === 5 || !p.qa.answer)
@@ -542,15 +633,17 @@ async function main () {
     })
   }
 
-  // ---- score non-adversarial in batches ----
+  // ---- score non-adversarial in parallel batches ----
   const nonAdversarial = prepared.filter((p) => p.qa.category !== 5 && p.qa.answer)
-  let batchNumber = 0
+  const batches = []
   for (let i = 0; i < nonAdversarial.length; i += BATCH_SIZE) {
-    const batch = nonAdversarial.slice(i, i + BATCH_SIZE)
-    batchNumber++
-    console.log(`[judge] batch ${batchNumber} (${batch.length} pairs)...`)
-    const llmResults = await scoreBatchLLM(batch)
+    batches.push(nonAdversarial.slice(i, i + BATCH_SIZE))
+  }
+  console.log(`[conv ${convIdx}] judging ${batches.length} batches (${nonAdversarial.length} pairs, ${JUDGE_CONCURRENCY} at a time)`)
 
+  let judgedBatches = 0
+  await mapPool(batches, JUDGE_CONCURRENCY, async (batch) => {
+    const llmResults = await scoreBatchLLM(batch)
     for (let j = 0; j < batch.length; j++) {
       const p = batch[j]
       completedByIndex.set(p.index, {
@@ -568,11 +661,10 @@ async function main () {
         tokenOverlap: scoreTokenOverlap(p.qa.answer, p.memories)
       })
     }
-
+    judgedBatches++
     saveCheckpoint()
-    console.log(`[judge] checkpoint updated (${completedByIndex.size} scored)`)
-    if (i + BATCH_SIZE < nonAdversarial.length) await sleep(800)
-  }
+    console.log(`[conv ${convIdx}] batch ${judgedBatches}/${batches.length} done (${completedByIndex.size} scored)`)
+  })
 
   // ---- ordered results + reports ----
   const rows = []
@@ -586,16 +678,15 @@ async function main () {
 
   fs.mkdirSync(RESULTS_DIR, { recursive: true })
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16)
-  const baseName = `${stamp}-${LABEL}-conv${CONV_INDEX}`
+  const baseName = `${stamp}-${LABEL}-conv${convIdx}`
   const jsonPath = path.join(RESULTS_DIR, `${baseName}.json`)
   const mdPath = path.join(RESULTS_DIR, `${baseName}.md`)
 
   const meta = {
     date: new Date().toISOString(),
     label: LABEL,
-    convIndex: CONV_INDEX,
-    sessionId: SESSION_ID,
-    sessionsIngested: SKIP_INGEST ? 'skipped' : sessionsIngested,
+    convIndex: convIdx,
+    sessionId,
     memoryCount,
     topK: TOP_K,
     advThreshold: ADV_THRESHOLD
@@ -612,7 +703,7 @@ async function main () {
   console.log(`Report:  ${mdPath}`)
 
   saveCheckpoint()
-  await mongoose.disconnect()
+  return rows
 }
 
 main().catch((err) => {

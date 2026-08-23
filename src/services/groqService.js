@@ -76,8 +76,12 @@ const __setClient = (next) => { overrideClient = next }
 // mid-process (see benchmarks/locomo/runEval.js).
 const getDefaultModel = () => process.env.GROQ_MODEL || getProviderConfig().defaultModel
 
-// --- Groq concurrency limiter (semaphore) ---
-const MAX_CONCURRENT_GROQ = 3
+// --- Global LLM concurrency limiter (semaphore) ---
+// Shared across ALL providers and every caller in-process (pipeline,
+// conflict detection, judge). Sized so parallel eval workers saturate the
+// provider rate limit without 429 storms; Mistral free tier allows ~30 RPM
+// sustained, so 6 concurrent calls with sub-second latencies stays safe.
+const MAX_CONCURRENT_GROQ = parseInt(process.env.MEGAMEM_MAX_CONCURRENT_LLM || '6', 10)
 let groqRunning = 0
 const groqQueue = []
 
