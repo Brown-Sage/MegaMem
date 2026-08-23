@@ -51,7 +51,23 @@ const ADV_THRESHOLD = parseFloat(getFlag('adv-threshold') || '0.6')
 const LABEL = getFlag('label') || 'baseline'
 // Judge on a separate model so eval scoring never competes with the
 // pipeline's tokens-per-day budget (Groq TPD limits are per-model).
-const JUDGE_MODEL = getFlag('judge-model') || 'openai/gpt-oss-20b'
+// qwen3.6-27b: separate TPD bucket from the pipeline; its <think> reasoning
+// is stripped below. NOTE: llama chat models were retired from Groq — don't
+// fall back to llama-* ids.
+//
+// MEGAMEM_JUDGE_PROVIDER routes the judge to a different OpenAI-compatible
+// provider (see groqService.js PROVIDERS). Set it when the pipeline runs on
+// the same provider so scoring doesn't share its quota bucket. The provider
+// is applied by temporarily switching the env before the first judge call —
+// groqService resolves the client lazily, and completeChat's `model` option
+// overrides DEFAULT_MODEL, so no call-site changes are needed.
+const JUDGE_PROVIDER = (getFlag('judge-provider') || process.env.MEGAMEM_JUDGE_PROVIDER || '').toLowerCase() || null
+const JUDGE_MODEL_DEFAULTS = {
+  groq: 'qwen/qwen3.6-27b',
+  mistral: 'mistral-large-latest',
+  cerebras: 'llama3.1-8b'
+}
+const JUDGE_MODEL = getFlag('judge-model') || (JUDGE_PROVIDER && JUDGE_MODEL_DEFAULTS[JUDGE_PROVIDER]) || 'qwen/qwen3.6-27b'
 const SKIP_INGEST = hasFlag('skip-ingest')
 const RESUME = hasFlag('resume')
 const DATA_PATH = getFlag('data') || path.join(__dirname, 'locomo10.json')
@@ -178,13 +194,36 @@ const judgeOnce = async (items) => {
   const localByItem = new Map(items.map((item, localIdx) => [localIdx, item]))
   const localItems = items.map((item, localIdx) => ({ ...item, index: localIdx }))
 
-  const content = await completeChat(buildBatchMessages(localItems), {
-    model: JUDGE_MODEL,
-    maxTokens: Math.max(3000, localItems.length * 400),
-    temperature: 0,
-    timeoutMs: 60000,
-    maxRetries: 2
-  })
+  // Route the judge to its own provider bucket when one is set. The pipeline
+  // provider env is saved/restored so ingest calls are untouched; groqService
+  // caches one client per process, so the first judge call under the switched
+  // env binds the judge client and later pipeline calls restore their own env
+  // BEFORE any client is constructed for them (lazy resolution).
+  let content
+  if (JUDGE_PROVIDER) {
+    const pipelineProvider = process.env.MEGAMEM_LLM_PROVIDER
+    process.env.MEGAMEM_LLM_PROVIDER = JUDGE_PROVIDER
+    try {
+      content = await completeChat(buildBatchMessages(localItems), {
+        model: JUDGE_MODEL,
+        maxTokens: Math.max(3000, localItems.length * 400),
+        temperature: 0,
+        timeoutMs: 60000,
+        maxRetries: 2
+      })
+    } finally {
+      if (pipelineProvider === undefined) delete process.env.MEGAMEM_LLM_PROVIDER
+      else process.env.MEGAMEM_LLM_PROVIDER = pipelineProvider
+    }
+  } else {
+    content = await completeChat(buildBatchMessages(localItems), {
+      model: JUDGE_MODEL,
+      maxTokens: Math.max(3000, localItems.length * 400),
+      temperature: 0,
+      timeoutMs: 60000,
+      maxRetries: 2
+    })
+  }
 
   // qwen-family models leak <think> reasoning before the JSON payload.
   const cleaned = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
