@@ -290,9 +290,12 @@ const scoreBatchLLM = async (items) => {
     const stillMissing = []
     for (const item of pending) {
       const verdict = byIndex.get(item.index)
-      if (verdict && /\bYES\b/.test(verdict) && !/\bNO\b/.test(verdict)) {
+      // Case-insensitive: providers differ in verdict casing (qwen emits
+      // uppercase YES/NO; mistral-small writes "Yes"/"No"). Word boundaries
+      // keep \bNO\b from matching inside "NOT"/"notable".
+      if (verdict && /\bYES\b/i.test(verdict) && !/\bNO\b/i.test(verdict)) {
         resolved.set(item.index, { correct: true, method: 'llm-judge', rawResponse: verdict })
-      } else if (verdict && /\bNO\b/.test(verdict) && !/\bYES\b/.test(verdict)) {
+      } else if (verdict && /\bNO\b/i.test(verdict) && !/\bYES\b/i.test(verdict)) {
         resolved.set(item.index, { correct: false, method: 'llm-judge', rawResponse: verdict })
       } else {
         stillMissing.push(item)
