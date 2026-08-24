@@ -40,4 +40,8 @@ benchmarks/locomo/*.json
 
 # Local progress tracking
 progress.md
+docs/progress.md
+
+# Internal design notes
+docs/engine-notes.md
 
