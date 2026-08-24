@@ -42,6 +42,6 @@ benchmarks/locomo/*.json
 progress.md
 docs/progress.md
 
-# Internal design notes
+# Internal notes & plans
+docs/confidential/
 docs/engine-notes.md
-
