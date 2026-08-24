@@ -9,6 +9,7 @@
     "test": "node --test \"tests/unit/*.test.js\"",
     "lint": "eslint .",
     "eval:locomo": "node benchmarks/locomo/runEval.js",
+    "eval:latency": "node benchmarks/locomo/benchLatency.js",
     "install:mcp": "node scripts/install-cursor-mcp.js",
     "doctor": "node scripts/doctor.js",
     "test:embed": "node tests/test-embed.js",
