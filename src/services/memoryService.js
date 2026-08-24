@@ -10,6 +10,15 @@ const log = child('memory')
 
 const normalizeType = (type) => (MEMORY_TYPES.includes(type) ? type : 'other')
 
+const clampNumber = (value, min, max, fallback) => {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(max, Math.max(min, n))
+}
+
+const normalizeImportance = (value) => clampNumber(value, 1, 5, 3)
+const normalizeConfidence = (value) => clampNumber(value, 0, 1, 0.7)
+
 const recordHistory = ({ memoryId, sessionId, event, oldMemory = null, newMemory = null, reason = '', actor = 'mcp' }) =>
   MemoryHistory.create({
     memoryId: String(memoryId),
@@ -21,7 +30,7 @@ const recordHistory = ({ memoryId, sessionId, event, oldMemory = null, newMemory
     actor
   }).catch((err) => log.warn({ err: err.message, memoryId, event }, 'history write failed'))
 
-const saveMemory = async (text, sessionId, type = 'other', { actor = 'mcp', eventAt = null, embedding = null } = {}) => {
+const saveMemory = async (text, sessionId, type = 'other', { actor = 'mcp', eventAt = null, embedding = null, importance = null, confidence = null } = {}) => {
   const vector = embedding || await embedText(text)
   const memory = new Memory({
     userId: currentUserId(),
@@ -30,7 +39,9 @@ const saveMemory = async (text, sessionId, type = 'other', { actor = 'mcp', even
     type: normalizeType(type),
     embedding: vector,
     dedupKey: computeDedupKey(text),
-    eventAt: eventAt || undefined
+    eventAt: eventAt || undefined,
+    importance: importance != null ? normalizeImportance(importance) : undefined,
+    confidence: confidence != null ? normalizeConfidence(confidence) : undefined
   })
   await memory.save()
   await recordHistory({
@@ -44,7 +55,7 @@ const saveMemory = async (text, sessionId, type = 'other', { actor = 'mcp', even
   return memory
 }
 
-const updateMemory = async (memoryId, text, type, { actor = 'mcp', embedding = null } = {}) => {
+const updateMemory = async (memoryId, text, type, { actor = 'mcp', embedding = null, eventAt = null, importance = null, confidence = null } = {}) => {
   const existing = await Memory.findOne({ _id: memoryId, userId: currentUserId() })
   if (!existing) {
     throw new Error(`Memory not found for update: ${memoryId}`)
@@ -58,6 +69,15 @@ const updateMemory = async (memoryId, text, type, { actor = 'mcp', embedding = n
   existing.updatedAt = new Date()
   if (type !== undefined) {
     existing.type = normalizeType(type)
+  }
+  if (eventAt) {
+    existing.eventAt = eventAt
+  }
+  if (importance != null) {
+    existing.importance = normalizeImportance(importance)
+  }
+  if (confidence != null) {
+    existing.confidence = normalizeConfidence(confidence)
   }
 
   await existing.save()
@@ -108,6 +128,9 @@ const applyMemoryDecision = async ({
   sessionId,
   fallbackText,
   type,
+  eventAt = null,
+  importance = null,
+  confidence = null,
   minConfidence = 0.75,
   actor = 'mcp'
 }) => {
@@ -148,7 +171,7 @@ const applyMemoryDecision = async ({
 
     return {
       action: 'update',
-      memory: await updateMemory(decision.targetMemoryId, text.trim(), resolvedType, { actor }),
+      memory: await updateMemory(decision.targetMemoryId, text.trim(), resolvedType, { actor, eventAt, importance, confidence }),
       reason: decision.reason || 'Memory updated.'
     }
   }
@@ -167,7 +190,7 @@ const applyMemoryDecision = async ({
     let created = null
     if (decision.memoryText && decision.memoryText.trim() &&
         computeDedupKey(decision.memoryText) !== deleted.dedupKey) {
-      created = await saveMemory(decision.memoryText.trim(), sessionId, resolvedType, { actor })
+      created = await saveMemory(decision.memoryText.trim(), sessionId, resolvedType, { actor, eventAt, importance, confidence })
     }
 
     return {
@@ -180,7 +203,7 @@ const applyMemoryDecision = async ({
 
   return {
     action: 'create',
-    memory: await saveMemory(text.trim(), sessionId, resolvedType, { actor }),
+    memory: await saveMemory(text.trim(), sessionId, resolvedType, { actor, eventAt, importance, confidence }),
     reason: decision.reason || 'Memory created.'
   }
 }

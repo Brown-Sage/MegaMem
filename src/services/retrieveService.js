@@ -1,13 +1,23 @@
 const Memory = require('../models/Memory')
 const { embedText } = require('./embedService')
+const { completeChat } = require('./groqService')
 const { currentUserId } = require('../utils/ownership')
 const { userSessionId, workspaceSessionId, layerLabel } = require('../utils/sessionId')
+const { child } = require('../utils/log')
+
+const log = child('retrieve')
 
 // Atlas $vectorSearchScore for cosine similarity is 0..1 (0.5 = orthogonal).
 // Empirically, genuine matches land around 0.64+ and noise around 0.57.
 const DEFAULT_MIN_SCORE = process.env.MEGAMEM_MIN_SCORE
   ? Number(process.env.MEGAMEM_MIN_SCORE)
   : 0.6
+
+// Lexical-only hits get a pseudo-score on the cosine scale (0.5 = orthogonal):
+// overlap 0.5 → ~0.72, overlap 1.0 → ~0.95, i.e. a memory matching every query
+// term outranks a weak cosine match but loses to a strong one.
+const LEXICAL_BASE = 0.5
+const LEXICAL_SPAN = 0.45
 
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
@@ -30,22 +40,30 @@ const inferLayers = (sessionIds) => {
   return { userId, workspaceId, explicit: null }
 }
 
-const tokenizeQuery = (query) => [...new Set(
-  query
-    .split(/[\s,;!?()[\]{}"']+/)
-    .map((token) => token.trim())
-    .filter((token) => token.length >= 3)
-)]
+// Lexical channel (W4): always-on second signal, not just a fallback. A memory
+// matching >= half the query tokens is a candidate even when cosine is weak —
+// this catches paraphrase-phrased queries where embeddings under-retrieve.
+const LEXICAL_MIN_OVERLAP = 0.5
+
+// Importance tie-break (W1): importance 1-5 maps to a ±0.02 nudge so it can
+// reorder near-ties but never overpower a meaningful cosine difference.
+const IMPORTANCE_BOOST_WEIGHT = 0.01
 
 const searchVector = async (sessionId, queryEmbedding, topK) => {
+  // Wider pool than topK: fusion needs headroom to merge/rerank candidates,
+  // and at ~200-memory store scale the raw top-5 is often all noise.
+  const limit = Math.max(topK * 4, 20)
+  const numCandidates = process.env.MEGAMEM_NUM_CANDIDATES
+    ? Number(process.env.MEGAMEM_NUM_CANDIDATES)
+    : Math.max(100, topK * 20)
   const results = await Memory.aggregate([
     {
       $vectorSearch: {
         index: 'vector_index',
         path: 'embedding',
         queryVector: queryEmbedding,
-        numCandidates: 50,
-        limit: topK,
+        numCandidates,
+        limit,
         // userId must be a filter field in the Atlas Search index for this
         // to actually constrain results — keep vector_index definition in sync.
         filter: { sessionId, userId: currentUserId() }
@@ -58,6 +76,8 @@ const searchVector = async (sessionId, queryEmbedding, topK) => {
         type: 1,
         status: 1,
         eventAt: 1,
+        importance: 1,
+        confidence: 1,
         score: { $meta: 'vectorSearchScore' }
       }
     }
@@ -68,62 +88,168 @@ const searchVector = async (sessionId, queryEmbedding, topK) => {
   return results.filter((memory) => !memory.status || memory.status === 'active')
 }
 
-const searchLexical = async (query, sessionIds, topK) => {
+const tokenizeQuery = (query) => [...new Set(
+  query
+    .split(/[\s,;!?()[\]{}"']+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 3)
+)]
+
+// Returns memories with `lexicalOverlap` (0..1 = matched query tokens / total).
+const searchLexicalScored = async (query, sessionIds, limit) => {
   const tokens = tokenizeQuery(query)
   if (tokens.length === 0) return []
 
   const pattern = tokens.map(escapeRegex).join('|')
 
-  return Memory.find({
+  const candidates = await Memory.find({
     userId: currentUserId(),
     sessionId: { $in: sessionIds },
     status: 'active',
     text: { $regex: pattern, $options: 'i' }
   })
-    .select('text sessionId type')
+    .select('text sessionId type eventAt importance confidence')
     .sort({ _id: -1 })
-    .limit(topK)
+    .limit(limit * 5)
     .lean()
+
+  return candidates
+    .map((memory) => {
+      const lowerText = memory.text.toLowerCase()
+      const matched = tokens.filter((t) => lowerText.includes(t.toLowerCase())).length
+      return { ...memory, lexicalOverlap: matched / tokens.length }
+    })
+    .filter((memory) => memory.lexicalOverlap >= LEXICAL_MIN_OVERLAP)
+    .slice(0, limit)
 }
 
-const shapeResult = (memory, layers, score) => ({
+const shapeResult = (memory, layers, score, fusedScore = score) => ({
   text: memory.text,
   score,
+  fusedScore,
   sessionId: memory.sessionId,
   type: memory.type || 'other',
+  importance: memory.importance ?? 3,
+  confidence: memory.confidence ?? null,
   layer: layerLabel(memory.sessionId, layers)
 })
 
-const retrieveMemory = async (query, sessionIdOrIds, topK = 5, minScore = DEFAULT_MIN_SCORE) => {
+// LLM relevance gate: cosine similarity cannot separate "topically adjacent"
+// from "actually answers the question" (LoCoMo: irrelevant questions retrieved
+// memories at cosine 0.76-0.91, same range as true hits). One cheap Groq call
+// decides whether ANY retrieved memory genuinely answers the query. When it
+// says no, we return [] so callers answer "I don't know" instead of
+// hallucinating from unrelated context.
+
+const buildRelevanceMessages = ({ query, memories }) => [
+  {
+    role: 'system',
+    content: [
+      'You are a relevance judge for a memory system.',
+      'Given a question and candidate memories, decide if any memory can ANSWER the question.',
+      'A memory counts if it directly states the answer OR provides the specific facts needed to derive it (a date, name, place, number, or event the question asks about).',
+      'Topical similarity alone is NOT enough — a memory that merely discusses the same topic without the needed detail is irrelevant.',
+      'Answer only YES or NO.'
+    ].join('\n')
+  },
+  {
+    role: 'user',
+    content: [
+      `Question: ${query}`,
+      '',
+      'Candidate memories:',
+      ...memories.map((m, i) => `${i + 1}. ${m.text}`),
+      '',
+      'Does any memory provide the information needed to answer the question? Reply with only YES or NO.'
+    ].join('\n')
+  }
+]
+
+// Returns {gated:boolean} — gated=true means the candidates were judged
+// non-answerable and the caller should treat retrieval as empty.
+const relevanceGate = async (query, memories) => {
+  if (memories.length === 0) return { gated: false }
+
+  try {
+    const content = await completeChat(buildRelevanceMessages({ query, memories }), {
+      temperature: 0,
+      // gpt-oss is a reasoner: hidden reasoning tokens count against max_tokens,
+      // so a tiny budget returns empty content (verified: 5 tokens → '').
+      maxTokens: 200,
+      timeoutMs: 8000,
+      // The gate is cheap but frequent; under provider rate limits (Mistral
+      // free tier 429s aggressively) extra retries honoring Retry-After keep
+      // it from silently failing open and letting adversarial queries through.
+      maxRetries: 4
+    })
+    const verdict = /YES/i.test(content || '')
+    if (!verdict) {
+      return { gated: true }
+    }
+    return { gated: false }
+  } catch (err) {
+    // Fail open: if the gate itself errors, keep the vector results rather
+    // than losing good retrievals because the judge is down.
+    log.warn({ err: err.message }, 'relevance gate error; keeping results')
+    return { gated: false }
+  }
+}
+
+const retrieveMemory = async (query, sessionIdOrIds, topK = 5, minScore = DEFAULT_MIN_SCORE, { relevanceGate: useGate = true } = {}) => {
   const sessionIds = asSessionIds(sessionIdOrIds)
   if (sessionIds.length === 0) return []
 
   const layers = inferLayers(sessionIds)
   const queryEmbedding = await embedText(query)
 
-  const batches = await Promise.all(
-    sessionIds.map((sessionId) => searchVector(sessionId, queryEmbedding, topK))
-  )
+  // Both channels always run (W4) — vector catches paraphrases, lexical
+  // catches exact-term phrasing mismatch; fusion merges the candidate pools.
+  const poolSize = Math.max(topK * 4, 20)
+  const [batches, lexicalHits] = await Promise.all([
+    Promise.all(sessionIds.map((sessionId) => searchVector(sessionId, queryEmbedding, topK))),
+    searchLexicalScored(query, sessionIds, poolSize)
+  ])
 
-  const merged = new Map()
+  // Fusion: one entry per memory. Candidates qualify via EITHER channel
+  // (vector >= threshold OR strong lexical overlap). Ranking score is the
+  // primary channel score mapped to a comparable scale plus the small
+  // importance nudge — cosine still dominates, lexical-only hits enter at a
+  // level proportional to how many query terms they match.
+  const fused = new Map()
   for (const memory of batches.flat()) {
+    if (memory.score < minScore) continue
+    fused.set(memory._id.toString(), { ...memory, lexicalOverlap: null })
+  }
+  for (const memory of lexicalHits) {
     const id = memory._id.toString()
-    const existing = merged.get(id)
-    if (!existing || memory.score > existing.score) {
-      merged.set(id, memory)
+    const existing = fused.get(id)
+    if (existing) {
+      existing.lexicalOverlap = memory.lexicalOverlap
+      continue
+    }
+    fused.set(id, memory)
+  }
+
+  const importanceNudge = (m) => ((m.importance ?? 3) - 3) * IMPORTANCE_BOOST_WEIGHT
+  const primaryScore = (m) =>
+    m.score != null ? m.score : LEXICAL_BASE + (LEXICAL_SPAN * m.lexicalOverlap)
+
+  const ranked = [...fused.values()]
+    .map((m) => ({ ...m, fusedScore: primaryScore(m) + importanceNudge(m) }))
+    .sort((a, b) => b.fusedScore - a.fusedScore)
+    .slice(0, topK)
+    .map((m) => shapeResult(m, layers, m.score ?? null, m.fusedScore))
+
+  if (ranked.length > 0 && useGate) {
+    // Gate only fires when we would otherwise answer from memory.
+    const verdict = await relevanceGate(query, ranked)
+    if (verdict.gated) {
+      log.info({ query: query.slice(0, 80) }, 'relevance gate: no memory answers this; returning empty')
+      return []
     }
   }
 
-  const ranked = [...merged.values()]
-    .filter((memory) => memory.score >= minScore)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, topK)
-    .map((memory) => shapeResult(memory, layers, memory.score))
-
-  if (ranked.length > 0) return ranked
-
-  const lexical = await searchLexical(query, sessionIds, topK)
-  return lexical.map((memory) => shapeResult(memory, layers, null))
+  return ranked
 }
 
-module.exports = { retrieveMemory, searchLexical, DEFAULT_MIN_SCORE }
+module.exports = { retrieveMemory, searchLexical: searchLexicalScored, relevanceGate, DEFAULT_MIN_SCORE }

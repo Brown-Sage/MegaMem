@@ -66,7 +66,17 @@ const buildExtractionMessages = ({ conversation, maxMemories, context }) => [
       'BAD memories (vague summaries that lose detail):',
       '- "Caroline values community and creative outlets."',
       '- "Melanie is focused on self-care activities."',
-      '- "The team discussed database options."'
+      '- "The team discussed database options."',
+      '',
+      'RULES for dates and times:',
+      '- NEVER write bare relative time phrases like "last year", "last week", "last Friday", "this month", or "next month" in the memory text.',
+      '- If the conversation states an absolute date, use that exact date.',
+      '- If only a relative phrase is given, still keep the relative phrase BUT make the rest of the fact maximally specific (who, what, where).',
+      '',
+      'RULES for identity and facts about people:',
+      '- Always state facts explicitly with the person\'s name as the subject: "Caroline is a transgender woman", NOT "Caroline discussed her journey".',
+      '- Include concrete details the speaker actually said (numbers, names, places, reasons) — do not compress them into abstractions like "expressed support".',
+      '- If someone reacts to something, capture WHAT they said specifically, not just that they reacted positively.',
     ].join('\n')
   },
   {

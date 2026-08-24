@@ -12,6 +12,10 @@ const memorySchema = new mongoose.Schema({
   text: { type: String, required: true },
   type: { type: String, enum: MEMORY_TYPES, default: 'other' },
   embedding: { type: [Number], required: true },
+  // Extraction-time signal (W1): the LLM already scores every fact; persisting
+  // these lets retrieval rank and future profile compilation use them.
+  importance: { type: Number, min: 1, max: 5, default: 3 },
+  confidence: { type: Number, min: 0, max: 1, default: 0.7 },
   status: { type: String, enum: MEMORY_STATUSES, default: 'active' },
   dedupKey: { type: String, default: '' },
   eventAt: { type: Date, default: null },

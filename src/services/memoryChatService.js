@@ -146,6 +146,9 @@ const persistExtractedMemories = async ({
         sessionId: targetId,
         fallbackText: memory.text,
         type: memory.type,
+        eventAt: memory.eventAt,
+        importance: memory.importance,
+        confidence: memory.confidence,
         actor
       })
 
