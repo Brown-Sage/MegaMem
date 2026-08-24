@@ -3,47 +3,81 @@ const { embedText } = require('./embedService')
 const { completeChat } = require('./groqService')
 const { parseJsonObject } = require('../utils/json')
 const { currentUserId } = require('../utils/ownership')
+const { computeDedupKey } = require('../utils/dedupKey')
 
 const CONFLICT_ACTIONS = ['create', 'update', 'skip', 'delete']
+
+// Rows written inside this window may not be visible to $vectorSearch yet
+// (Atlas Search indexes asynchronously, ~3s+ under load), so they are swept
+// directly by dedupKey/recency and merged into the candidate pool.
+const UNINDEXED_WINDOW_MS = 60 * 1000
 
 const findSimilarMemories = async ({ text, sessionId, topK = 8, minScore = 0.45, queryEmbedding = null }) => {
   const queryVector = queryEmbedding || await embedText(text)
 
-  const results = await Memory.aggregate([
-    {
-      $vectorSearch: {
-        index: 'vector_index',
-        path: 'embedding',
-        queryVector: queryVector,
-        numCandidates: 50,
-        limit: topK,
-        filter: { sessionId, userId: currentUserId() }
+  const [results, unindexed] = await Promise.all([
+    Memory.aggregate([
+      {
+        $vectorSearch: {
+          index: 'vector_index',
+          path: 'embedding',
+          queryVector: queryVector,
+          numCandidates: 50,
+          limit: topK,
+          filter: { sessionId, userId: currentUserId() }
+        }
+      },
+      {
+        $project: {
+          _id: 1,
+          text: 1,
+          status: 1,
+          eventAt: 1,
+          createdAt: 1,
+          score: { $meta: 'vectorSearchScore' }
+        }
       }
-    },
-    {
-      $project: {
-        _id: 1,
-        text: 1,
-        status: 1,
-        eventAt: 1,
-        createdAt: 1,
-        score: { $meta: 'vectorSearchScore' }
-      }
-    }
+    ]),
+    // Indexing-gap sweep: recent rows regardless of vector visibility.
+    // Exact dedupKey match catches literal repeats; recency catches near-
+    // duplicates written seconds ago that $vectorSearch cannot rank yet.
+    Memory.find({
+      userId: currentUserId(),
+      sessionId,
+      status: 'active',
+      createdAt: { $gte: new Date(Date.now() - UNINDEXED_WINDOW_MS) }
+    })
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .select('text status eventAt createdAt dedupKey')
+      .lean()
+      .then(rows => rows.map(row => ({
+        ...row,
+        id: row._id.toString(),
+        score: computeDedupKey(text) === row.dedupKey ? 1 : null,
+        recent: true
+      })))
   ])
 
   // Post-filter on status: Atlas $vectorSearch only supports filter fields
   // declared in the Search index; 'status' isn't one (yet). Candidate sets
   // are small so filtering here is fine at personal scale.
-  return results
+  const seen = new Set()
+  return [...results, ...unindexed]
     .filter(memory => !memory.status || memory.status === 'active')
-    .filter(memory => typeof memory.score !== 'number' || memory.score >= minScore)
+    .filter(memory => typeof memory.score !== 'number' || memory.score >= minScore || memory.recent === true)
+    .filter(memory => {
+      if (seen.has(memory.id)) return false
+      seen.add(memory.id)
+      return true
+    })
     .map(memory => ({
-      id: memory._id.toString(),
+      id: memory.id || memory._id.toString(),
       text: memory.text,
       eventAt: memory.eventAt || null,
       createdAt: memory.createdAt,
-      score: memory.score
+      score: memory.score,
+      recent: memory.recent || false
     }))
 }
 

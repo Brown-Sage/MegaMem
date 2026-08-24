@@ -190,10 +190,49 @@ const resolveEventDate = (text, sessionDate = null) => {
   return null
 }
 
+// Does the text use a relative time expression ("next month", "two weeks ago",
+// "last Friday") whose meaning depends on when it was said?
+const hasRelativeTimePhrase = (text) => {
+  if (!text) return false
+  for (const pattern of RELATIVE_PATTERNS) {
+    if (pattern.re.test(text)) return true
+  }
+  if (new RegExp(`\\b(${WEEKDAY_RE})\\b`, 'i').test(text)) return true
+  return false
+}
+
+// Downstream consumers (relevance gate, chat prompts, eval judges) only see
+// memory TEXT, never metadata fields like eventAt. When a memory says "next
+// month" and we resolved that to an absolute date, append the date so the
+// text is self-contained: "planning a camping trip next month (June 2023)".
+// Skips texts that already carry an absolute date and ones with nothing
+// relative to clarify.
+const bakeResolvedDate = (text, eventAt) => {
+  if (!text || !eventAt) return text
+
+  let baked = String(text).trim()
+  if (!hasRelativeTimePhrase(baked)) return baked
+  // Already contains an absolute date — nothing to clarify.
+  if (parseAbsoluteDate(baked)) return baked
+
+  const d = new Date(eventAt)
+  if (Number.isNaN(d.getTime())) return baked
+
+  const months = ['January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December']
+  const label = `${months[d.getUTCMonth()]} ${d.getUTCFullYear()}`
+
+  baked = `${baked} (${label})`
+
+  return baked
+}
+
 module.exports = {
   parseSessionDate,
   parseAbsoluteDate,
   resolveEventDate,
+  bakeResolvedDate,
+  hasRelativeTimePhrase,
   addDays,
   addMonths
 }

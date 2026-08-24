@@ -4,6 +4,8 @@ const {
   parseSessionDate,
   parseAbsoluteDate,
   resolveEventDate,
+  bakeResolvedDate,
+  hasRelativeTimePhrase,
   addDays,
   addMonths
 } = require('../../src/utils/temporal')
@@ -114,4 +116,37 @@ test('addDays crosses month boundary', () => {
 
 test('addMonths clamps day-of-month', () => {
   assert.equal(utc(addMonths(new Date(Date.UTC(2023, 0, 31)), 1)), '2023-02-28')
+})
+
+// --- hasRelativeTimePhrase ---
+test('hasRelativeTimePhrase: detects common relative expressions', () => {
+  assert.equal(hasRelativeTimePhrase('planning a camping trip next month'), true)
+  assert.equal(hasRelativeTimePhrase('went hiking last Friday'), true)
+  assert.equal(hasRelativeTimePhrase('started a new job two weeks ago'), true)
+})
+
+test('hasRelativeTimePhrase: false for absolute dates or no dates', () => {
+  assert.equal(hasRelativeTimePhrase('adopted Pixie on 2 April 2023'), false)
+  assert.equal(hasRelativeTimePhrase('prefers tea over coffee'), false)
+})
+
+// --- bakeResolvedDate ---
+test('bakeResolvedDate appends month-year label for relative phrases', () => {
+  const baked = bakeResolvedDate('Melanie is going camping next month', new Date(Date.UTC(2023, 5, 15)))
+  assert.equal(baked, 'Melanie is going camping next month (June 2023)')
+})
+
+test('bakeResolvedDate leaves absolute-date texts untouched', () => {
+  const text = 'Audrey adopted a puppy named Pixie on 2 April 2023.'
+  assert.equal(bakeResolvedDate(text, new Date(Date.UTC(2023, 3, 2))), text)
+})
+
+test('bakeResolvedDate leaves texts without relative phrases untouched', () => {
+  const text = 'Caroline is a transgender woman'
+  assert.equal(bakeResolvedDate(text, new Date(Date.UTC(2023, 6, 1))), text)
+})
+
+test('bakeResolvedDate handles null/invalid input', () => {
+  assert.equal(bakeResolvedDate(null, new Date()), null)
+  assert.equal(bakeResolvedDate('next month trip', null), 'next month trip')
 })

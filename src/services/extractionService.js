@@ -14,7 +14,10 @@ const EXTRACTION_CHUNK_OVERLAP = 200
 const EXTRACTION_MAX_CHUNKS = 40
 
 // Per-chunk fact budget scales with chunk size; bounded to protect latency.
-const scaledMaxMemories = (chars) => Math.min(40, Math.max(5, Math.ceil(chars / 1500)))
+// Coverage analysis on LoCoMo showed the old chars/1500 budget (~2 facts per
+// 1800-char chunk) was the main cause of answers-not-in-store; ~1 fact per
+// 700-800 chars keeps extraction density close to what conversations carry.
+const scaledMaxMemories = (chars) => Math.min(40, Math.max(6, Math.ceil(chars / 750)))
 
 const clampNumber = (value, min, max, fallback) => {
   const number = Number(value)
@@ -296,8 +299,70 @@ const extractMemories = async ({ conversation, maxMemories, chunks, context }) =
   return dedupeExtracted(allMemories)
 }
 
+// Session-end fact-sheet pass (B2): one extra LLM call over the rolling
+// summary that compiles EXPLICIT facts about each person — identity,
+// relationship status, family, job, plans/events with dates. Chunked
+// extraction keeps dropping these ("X discussed her journey" instead of
+// "X is a transgender woman"), and QA evals showed identity/status facts
+// were the single biggest answers-not-in-store category.
+const buildFactSheetMessages = ({ summary, existingTexts }) => [
+  {
+    role: 'system',
+    content: [
+      'You compile a fact sheet of explicit, durable facts about people from a conversation summary.',
+      '',
+      'HARD REQUIREMENTS:',
+      '- Every fact must be STATED or clearly established in the summary. Never invent or infer.',
+      '- State each fact explicitly with the person\'s name as subject: "Caroline is a transgender woman", "Caroline is single", "Dave wants to open a car maintenance shop".',
+      '- Include: identity, relationship status, family, pets, job/education, where they live, goals/plans, and events/plans that have specific dates.',
+      '- For anything with a date, write the absolute date from the summary (never "last week" / "next month").',
+      '- Do NOT repeat facts already extracted (list provided) — only add missing ones.',
+      '- Return only valid JSON. No markdown.'
+    ].join('\n')
+  },
+  {
+    role: 'user',
+    content: [
+      'Conversation summary:',
+      summary || '(no summary available)',
+      '',
+      'Facts already extracted (do not duplicate):',
+      existingTexts.length ? existingTexts.map((t) => `- ${t}`).join('\n') : '(none)',
+      '',
+      'Compile up to 15 additional explicit person-facts the list above is missing.',
+      'Use this JSON shape exactly:',
+      '{',
+      '  "memories": [',
+      '    { "text": "explicit fact", "type": "fact", "importance": 3, "confidence": 0.8 }',
+      '  ]',
+      '}'
+    ].filter(Boolean).join('\n')
+  }
+]
+
+const extractFactSheet = async ({ summary, existingTexts = [] }) => {
+  if (!summary || !summary.trim()) return []
+
+  try {
+    const content = await completeChat(
+      buildFactSheetMessages({ summary: summary.trim(), existingTexts }),
+      { temperature: 0, maxTokens: 2000, timeoutMs: 30000 }
+    )
+    const parsed = parseJsonObject(content, 'Fact sheet extraction')
+    const memories = Array.isArray(parsed.memories) ? parsed.memories : []
+    const normalized = memories.map(normalizeMemory).filter(Boolean)
+    log.info({ requested: memories.length, kept: normalized.length }, 'fact-sheet pass complete')
+    return normalized
+  } catch (error) {
+    // The fact sheet is additive — a failure must not break persistence.
+    log.warn({ err: error.message }, 'fact-sheet pass failed')
+    return []
+  }
+}
+
 module.exports = {
   extractMemories,
+  extractFactSheet,
   buildExtractionMessages,
   normalizeMemory,
   dedupeExtracted,

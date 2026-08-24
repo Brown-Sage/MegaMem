@@ -148,6 +148,7 @@ const buildRelevanceMessages = ({ query, memories }) => [
       'You are a relevance judge for a memory system.',
       'Given a question and candidate memories, decide if any memory can ANSWER the question.',
       'A memory counts if it directly states the answer OR provides the specific facts needed to derive it (a date, name, place, number, or event the question asks about).',
+      'A relative time phrase paired with its resolved date (e.g. "next month (June 2023)") counts as providing that date.',
       'Topical similarity alone is NOT enough — a memory that merely discusses the same topic without the needed detail is irrelevant.',
       'Answer only YES or NO.'
     ].join('\n')

@@ -3,6 +3,7 @@ const { completeChat } = require('./groqService')
 const { buildPrompt } = require('./promptService')
 const {
   extractMemories,
+  extractFactSheet,
   updateRunningSummary,
   scaledMaxMemories,
   EXTRACTION_CHUNK_CHARS,
@@ -12,7 +13,7 @@ const {
 const { detectMemoryConflict } = require('./conflictService')
 const { applyMemoryDecision } = require('./memoryService')
 const { chunkText, dedupeChunks } = require('../utils/chunker')
-const { parseSessionDate, resolveEventDate } = require('../utils/temporal')
+const { parseSessionDate, resolveEventDate, bakeResolvedDate } = require('../utils/temporal')
 const { computeDedupKey } = require('../utils/dedupKey')
 const { embedText } = require('./embedService')
 const { recordWrite, checkRecentDuplicate, getRecentCandidates } = require('../utils/recentWrites')
@@ -80,16 +81,38 @@ const persistExtractedMemories = async ({
         context
       })
 
-      extracted.push(...chunkMemories.map((m) => ({
-        ...m,
-        eventAt: m.eventAt || resolveEventDate(m.text, sessionDate)
-      })))
+      extracted.push(...chunkMemories.map((m) => {
+        const eventAt = m.eventAt || resolveEventDate(m.text, sessionDate)
+        return {
+          ...m,
+          eventAt,
+          // Gate/judge/prompts only see text — bake the resolved absolute
+          // date into it so "next month" style facts are self-contained.
+          text: bakeResolvedDate(m.text, eventAt)
+        }
+      }))
 
       runningSummary = await updateRunningSummary(runningSummary, chunk)
       prevTail = chunk.slice(-800)
     } catch (error) {
       log.warn({ err: error.message, chunk: i + 1 }, 'chunk pipeline failed')
     }
+  }
+
+  // Session-end fact sheet: chunked extraction under-reports explicit
+  // person-facts (identity, status, dated plans). One additive pass over
+  // the rolling summary catches what chunks dropped.
+  try {
+    const factSheet = await extractFactSheet({
+      summary: runningSummary,
+      existingTexts: extracted.map((m) => m.text)
+    })
+    extracted.push(...factSheet.map((m) => {
+      const eventAt = m.eventAt || resolveEventDate(m.text, sessionDate)
+      return { ...m, eventAt, text: bakeResolvedDate(m.text, eventAt) }
+    }))
+  } catch (error) {
+    log.warn({ err: error.message }, 'fact-sheet pipeline failed')
   }
 
   log.info({ count: extracted.length }, 'extraction merged')

@@ -2,6 +2,11 @@
 // Closes the ~3s Atlas vector-index visibility gap: a fact written seconds
 // ago is invisible to $vectorSearch but present here, so rapid duplicate
 // saves are caught by cosine comparison instead of the LLM.
+//
+// The buffer is best-effort only (lost on restart, blind to other
+// processes). The DB-level sweep in conflictService.findSimilarMemories
+// covers what this cannot: it queries recent unindexed rows by dedupKey
+// and recency directly, so a restart mid-burst still catches duplicates.
 
 const WINDOW_MS = 10 * 60 * 1000
 const MAX_ENTRIES = 500
