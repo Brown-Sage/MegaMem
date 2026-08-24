@@ -70,6 +70,11 @@ const JUDGE_MODEL_DEFAULTS = {
 const JUDGE_MODEL = getFlag('judge-model') || (JUDGE_PROVIDER && JUDGE_MODEL_DEFAULTS[JUDGE_PROVIDER]) || 'qwen/qwen3.6-27b'
 const SKIP_INGEST = hasFlag('skip-ingest')
 const RESUME = hasFlag('resume')
+// --answer-gen: second scoring mode, Mem0-style (generate an answer from
+// retrieved memories, lenient judge) so our numbers are comparable to theirs.
+const ANSWER_GEN = hasFlag('answer-gen')
+const AG_TOP_K = parseInt(getFlag('ag-topk') || '100', 10)
+const AG_CHECKPOINT_PATH = (convIdx) => path.join(__dirname, `ag-checkpoint-conv${convIdx}.json`)
 const DATA_PATH = getFlag('data') || path.join(__dirname, 'locomo10.json')
 const RESULTS_DIR = path.join(__dirname, '..', 'results')
 // Per-conversation checkpoint files — parallel conversations must not clobber
@@ -451,6 +456,13 @@ async function main () {
     rows: await scoreConversation(data[convIdx], convIdx, sessionIdFor(convIdx))
   }))
 
+  // ---- phase 2b: answer-gen (Mem0-comparable) scoring, if requested ----
+  if (ANSWER_GEN) {
+    await mapPool(convIndexes, Math.max(CONV_CONCURRENCY, 2), async (convIdx) => {
+      await answerGenPass(data[convIdx], convIdx, sessionIdFor(convIdx))
+    })
+  }
+
   // ---- combined report ----
   if (allConvRows.length > 1) {
     const combined = allConvRows.flatMap((c) => c.rows)
@@ -543,6 +555,334 @@ async function ingestConversation (conv, convIdx, sessionId) {
 }
 
 // Scores all answerable QA pairs for one conversation against its store.
+// ---------- answer-generation mode (Mem0-comparable scoring) ----------
+// Mirrors mem0ai/memory-benchmarks methodology so numbers are comparable:
+// 1. retrieve top-AG_TOP_K memories with NO relevance gate and NO min-score
+// 2. generate a committed answer from those memories ("NEVER say 'not
+//    specified' ... COMMIT AND ANSWER")
+// 3. lenient judge: semantic equivalence, one-of-N gold match, +-14 day date
+//    tolerance, evidence used only to accept
+// Adversarial (cat 5) is excluded, exactly like their CATEGORIES_TO_EVALUATE.
+
+const AG_CATEGORIES = [1, 2, 3, 4]
+
+const buildAnswerGenMessages = ({ question, memories }) => [
+  {
+    role: 'system',
+    content: [
+      'You are a memory-based question answering system.',
+      'Answer the question using ONLY the memories provided below.',
+      'NEVER say "not specified", "unknown", or "I don\'t know" — COMMIT AND ANSWER with your best answer from the memories.',
+      'Keep the answer short: a name, date, place, or single sentence.'
+    ].join('\n')
+  },
+  {
+    role: 'user',
+    content: [
+      `Question: ${question}`,
+      '',
+      'Memories:',
+      ...memories.map((m) => `- ${m.text}`),
+      '',
+      'Answer:'
+    ].join('\n')
+  }
+]
+
+const generateAnswer = async ({ question, memories }) => {
+  if (!memories.length) return ''
+  const content = await completeChat(buildAnswerGenMessages({ question, memories }), {
+    temperature: 0,
+    maxTokens: 300,
+    timeoutMs: 20000
+  })
+  return (content || '').trim()
+}
+
+// Lenient Mem0-style judge — deliberately accept-biased.
+const buildAgJudgeMessages = (items) => {
+  const entries = items.map((item) => [
+    `[${item.index}]`,
+    `Question: ${item.qa.question}`,
+    `Gold answer: ${item.qa.answer}`,
+    `Generated response: ${item.answer || '(empty)'}`
+  ].join('\n')).join('\n\n')
+
+  return [
+    {
+      role: 'system',
+      content: [
+        'You are evaluating conversational memory answers. For each item, label the generated response CORRECT or WRONG against the gold answer.',
+        'Rules:',
+        '- CORRECT if the response conveys the same information as the gold answer, even if worded completely differently.',
+        '- If the gold answer lists multiple items, matching ANY ONE of them is CORRECT.',
+        '- Dates within about two weeks of the gold date are CORRECT.',
+        '- Durations or quantities within roughly half of the gold value are CORRECT.',
+        '- Aim to ACCEPT responses; use this instruction only to accept answers, never to reject them more strictly.',
+        'Return only valid JSON. No markdown.'
+      ].join('\n')
+    },
+    {
+      role: 'user',
+      content: [
+        entries,
+        '',
+        'Return exactly this JSON shape:',
+        '{',
+        '  "verdicts": [',
+        '    { "index": 0, "verdict": "CORRECT" },',
+        '    { "index": 1, "verdict": "WRONG" }',
+        '  ]',
+        '}'
+      ].join('\n')
+    }
+  ]
+}
+
+const agJudgeOnce = async (items) => {
+  // Models renumber verdicts from 0 regardless of the item ids they see,
+  // so always present a 0-based batch and translate back afterwards.
+  const localByItem = new Map(items.map((item, localIdx) => [localIdx, item]))
+  const localItems = items.map((item, localIdx) => ({ ...item, index: localIdx }))
+
+  let content
+  if (JUDGE_PROVIDER) {
+    const pipelineProvider = process.env.MEGAMEM_LLM_PROVIDER
+    process.env.MEGAMEM_LLM_PROVIDER = JUDGE_PROVIDER
+    try {
+      content = await completeChat(buildAgJudgeMessages(localItems), {
+        model: JUDGE_MODEL,
+        maxTokens: Math.max(3000, items.length * 400),
+        temperature: 0,
+        timeoutMs: 60000
+      })
+    } finally {
+      if (pipelineProvider === undefined) delete process.env.MEGAMEM_LLM_PROVIDER
+      else process.env.MEGAMEM_LLM_PROVIDER = pipelineProvider
+    }
+  } else {
+    content = await completeChat(buildAgJudgeMessages(localItems), {
+      model: JUDGE_MODEL,
+      maxTokens: Math.max(3000, items.length * 400),
+      temperature: 0,
+      timeoutMs: 60000
+    })
+  }
+
+  const parsed = parseJsonObject(content, 'answer-gen judge')
+  const verdicts = Array.isArray(parsed.verdicts) ? parsed.verdicts : []
+  const byIndex = new Map()
+  for (const v of verdicts) {
+    const idx = Number(v && v.index)
+    if (Number.isFinite(idx) && localByItem.has(idx)) {
+      byIndex.set(localByItem.get(idx).index, String(v.verdict || '').toUpperCase())
+    }
+  }
+  return { content, byIndex }
+}
+
+const scoreBatchAnswerGen = async (items) => {
+  const pending = [...items]
+  const resolved = new Map()
+
+  for (let round = 0; round < 3 && pending.length > 0; round++) {
+    let content
+    let byIndex
+    try {
+      ;({ content, byIndex } = await agJudgeOnce(pending))
+    } catch (err) {
+      console.error(`[ag-judge] batch failed (${pending.length} items): ${err.message}`)
+      break
+    }
+
+    const stillMissing = []
+    for (const item of pending) {
+      const verdict = byIndex.get(item.index)
+      if (verdict && /\bCORRECT\b/i.test(verdict)) {
+        resolved.set(item.index, { correct: true, method: 'llm-judge-answer-gen', rawResponse: verdict })
+      } else if (verdict && /\bWRONG\b/i.test(verdict)) {
+        resolved.set(item.index, { correct: false, method: 'llm-judge-answer-gen', rawResponse: verdict })
+      } else {
+        stillMissing.push(item)
+      }
+    }
+
+    if (stillMissing.length === pending.length && round > 0) {
+      console.error('[ag-judge] no progress on missing verdicts; giving up on them')
+      break
+    }
+    pending.length = 0
+    pending.push(...stillMissing)
+    if (pending.length > 0) await sleep(500)
+  }
+
+  return items.map((item) => resolved.get(item.index) || { correct: false, method: 'llm-judge-ambiguous', rawResponse: '' })
+}
+
+const summarizeAnswerGen = (rows) => {
+  const total = rows.length
+  const m = (r) => r.method || r.details?.method
+  const judged = rows.filter((r) => m(r) === 'llm-judge-answer-gen')
+  const correct = judged.filter((r) => (r.correct ?? r.details?.correct)).length
+  const ambiguous = rows.filter((r) => m(r) === 'llm-judge-ambiguous').length
+
+  const byCategory = {}
+  for (const r of rows) {
+    const name = CATEGORY_NAMES[r.category] || `category-${r.category}`
+    byCategory[name] = byCategory[name] || { correct: 0, total: 0, ambiguous: 0 }
+    byCategory[name].total++
+    if (m(r) === 'llm-judge-answer-gen' && (r.correct ?? r.details?.correct)) byCategory[name].correct++
+    if (m(r) === 'llm-judge-ambiguous') byCategory[name].ambiguous++
+  }
+
+  return {
+    total,
+    judged: judged.length,
+    ambiguous,
+    accuracy: judged.length ? +(correct / judged.length * 100).toFixed(1) : null,
+    byCategory
+  }
+}
+
+async function answerGenPass (conv, convIdx, sessionId) {
+  // Same answerable-QA filter as the containment mode.
+  const ingestedSessionNumbers = new Set(
+    Object.keys(conv.conversation)
+      .filter((k) => /^session_\d+$/.test(k))
+      .map((k) => parseInt(k.split('_')[1], 10))
+  )
+  const qaPairs = conv.qa.filter((qa) => {
+    if (!qa.answer) return false
+    if (!AG_CATEGORIES.includes(qa.category)) return false
+    if (!qa.evidence || qa.evidence.length === 0) return false
+    return qa.evidence.every((diaId) => {
+      const sessionNum = getSessionNumberFromDiaId(diaId)
+      return sessionNum !== null && ingestedSessionNumbers.has(sessionNum)
+    })
+  })
+  console.log(`[conv ${convIdx}] answer-gen: ${qaPairs.length} QA pairs (cats ${AG_CATEGORIES.join(',')}, topk=${AG_TOP_K}, gate off)`)
+
+  const cpPath = AG_CHECKPOINT_PATH(convIdx)
+  const completedByIndex = new Map()
+  const savedAnswers = new Map()
+  if (RESUME && fs.existsSync(cpPath)) {
+    const cp = JSON.parse(fs.readFileSync(cpPath, 'utf-8'))
+    if (cp.sessionId === sessionId) {
+      // Ambiguous verdicts are never trusted on resume — re-judge them.
+      // Rows may carry method at top level or nested under .details.
+      const m = (r) => r.method || r.details?.method
+      for (const entry of cp.scored) {
+        if (['llm-judge-ambiguous', 'llm-judge-error'].includes(m(entry.result))) continue
+        completedByIndex.set(entry.index, entry.result)
+      }
+      for (const a of cp.answers || []) savedAnswers.set(a.index, a)
+      console.log(`[conv ${convIdx}] ag resumed with ${completedByIndex.size} judged, ${savedAnswers.size} generated answers`)
+    }
+  }
+  // Answers are checkpointed separately from verdicts so a judge outage
+  // never forces regeneration (generation is the expensive half).
+  // Ambiguous/errored verdicts are not persisted — resume re-judges them.
+  const m = (r) => r.method || r.details?.method
+  const saveCheckpoint = () => fs.writeFileSync(cpPath, JSON.stringify({
+    sessionId,
+    convIndex: convIdx,
+    scored: [...completedByIndex.entries()]
+      .filter(([, result]) => !['llm-judge-ambiguous', 'llm-judge-error'].includes(m(result)))
+      .map(([index, result]) => ({ index, result })),
+    answers: [...savedAnswers.values()]
+  }))
+
+  const pendingIndexes = []
+  for (let i = 0; i < qaPairs.length; i++) {
+    if (!completedByIndex.has(i)) pendingIndexes.push(i)
+  }
+
+  let step = 0
+  const prepared = await mapPool(pendingIndexes, RETRIEVAL_CONCURRENCY, async (i) => {
+    const qa = qaPairs[i]
+    const cached = savedAnswers.get(i)
+    if (cached) return { index: i, qa, answer: cached.answer, memories: [], retrievedCount: cached.retrievedCount ?? null, fromCache: true }
+    try {
+      // Gate off + no threshold: the answerer filters noise itself.
+      const memories = await retrieveMemory(qa.question, sessionId, AG_TOP_K, 0, { relevanceGate: false })
+      const answer = await generateAnswer({ question: qa.question, memories })
+      savedAnswers.set(i, { index: i, answer, retrievedCount: memories.length })
+      step++
+      if (step % 25 === 0) {
+        saveCheckpoint()
+        console.log(`[conv ${convIdx}] answered ${step}/${pendingIndexes.length}`)
+      }
+      return { index: i, qa, answer, memories }
+    } catch (err) {
+      console.error(`[conv ${convIdx}] ag QA ${i} failed: ${err.message}`)
+      return { index: i, qa, answer: '', memories: [], retrievalError: err.message }
+    }
+  })
+  saveCheckpoint()
+
+  const batches = []
+  for (let i = 0; i < prepared.length; i += BATCH_SIZE) batches.push(prepared.slice(i, i + BATCH_SIZE))
+  console.log(`[conv ${convIdx}] ag judging ${batches.length} batches`)
+
+  let done = 0
+  await mapPool(batches, JUDGE_CONCURRENCY, async (batch) => {
+    const results = await scoreBatchAnswerGen(batch)
+    for (let j = 0; j < batch.length; j++) {
+      const p = batch[j]
+      completedByIndex.set(p.index, {
+        question: p.qa.question,
+        answer: p.qa.answer,
+        category: p.qa.category,
+        generated: p.answer || null,
+        retrievedCount: p.fromCache ? (p.retrievedCount ?? null) : p.memories.length,
+        retrievalMs: null,
+        details: results[j]
+      })
+    }
+    done++
+    saveCheckpoint()
+    console.log(`[conv ${convIdx}] ag batch ${done}/${batches.length} done`)
+  })
+
+  const rows = []
+  for (let i = 0; i < qaPairs.length; i++) {
+    const result = completedByIndex.get(i)
+    if (result) rows.push(result)
+  }
+
+  const summary = summarizeAnswerGen(rows)
+  fs.mkdirSync(RESULTS_DIR, { recursive: true })
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16)
+  const baseName = `${stamp}-${LABEL}-answergen-conv${convIdx}`
+  const jsonPath = path.join(RESULTS_DIR, `${baseName}.json`)
+  const mdPath = path.join(RESULTS_DIR, `${baseName}.md`)
+
+  const lines = []
+  lines.push(`# LoCoMo answer-gen eval (Mem0-comparable) — ${LABEL} — conv ${convIdx}`)
+  lines.push('')
+  lines.push(`- **Date:** ${new Date().toISOString()}`)
+  lines.push(`- **SessionId:** \`${sessionId}\``)
+  lines.push(`- **QA pairs:** ${summary.total} (categories ${AG_CATEGORIES.join(', ')}; adversarial excluded like Mem0)`)
+  lines.push(`- **topk:** ${AG_TOP_K}, relevance gate off, committed-answer generation`)
+  lines.push(`- **Judge:** ${JUDGE_MODEL}${JUDGE_PROVIDER ? ` via ${JUDGE_PROVIDER}` : ''} (lenient posture)`)
+  lines.push('')
+  lines.push(`## Accuracy: **${summary.accuracy ?? 'n/a'}%** (${summary.judged} judged, ${summary.ambiguous} ambiguous)`)
+  lines.push('')
+  lines.push('| Category | Correct | Judged | Ambiguous |')
+  lines.push('|---|---|---|---|')
+  for (const [cat, s] of Object.entries(summary.byCategory)) {
+    lines.push(`| ${cat} | ${s.correct} | ${s.total - s.ambiguous} | ${s.ambiguous} |`)
+  }
+  fs.writeFileSync(jsonPath, JSON.stringify({ meta: { label: LABEL, convIndex: convIdx, sessionId, topK: AG_TOP_K }, summary, results: rows }, null, 2))
+  fs.writeFileSync(mdPath, lines.join('\n'))
+
+  console.log('\n' + '='.repeat(60))
+  console.log(`ANSWER-GEN (Mem0-style): ${summary.accuracy ?? 'n/a'}% on ${summary.judged} judged / ${summary.total} total`)
+  console.log(`Results: ${jsonPath}`)
+  saveCheckpoint()
+  return rows
+}
+
 async function scoreConversation (conv, convIdx, sessionId) {
 
   const memoryCount = await Memory.countDocuments({ sessionId })
