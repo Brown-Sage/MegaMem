@@ -820,6 +820,42 @@ async function answerGenPass (conv, convIdx, sessionId) {
   })
   saveCheckpoint()
 
+  // P0 instrumentation: persist what retrieval actually surfaced per QA so
+  // failure decomposition is a query instead of archaeology. Sidecar file
+  // keeps the results JSON lean; keyed by index + question for joins.
+  // Cached rows (resumed answers) carry no memories — re-retrieve for them so
+  // the dump is always complete (retrieval is cheap vs regeneration, and
+  // partial dumps would silently poison flip-analysis).
+  for (const p of prepared) {
+    if (p.fromCache || p.retrievalError) {
+      try {
+        p.memories = await retrieveMemory(p.qa.question, sessionId, AG_TOP_K, 0, { relevanceGate: false })
+        delete p.retrievalError
+      } catch (err) {
+        console.error(`[conv ${convIdx}] ag P0 re-retrieve QA ${p.index} failed: ${err.message}`)
+      }
+    }
+  }
+  const retrievedPath = path.join(__dirname, `ag-retrieved-conv${convIdx}.json`)
+  fs.writeFileSync(
+    retrievedPath,
+    JSON.stringify({
+      meta: { sessionId, convIndex: convIdx, topK: AG_TOP_K, generatedAt: new Date().toISOString() },
+      rows: prepared.map((p) => ({
+        index: p.index,
+        question: p.qa.question,
+        category: p.qa.category,
+        fromCache: !!p.fromCache,
+        retrievalError: p.retrievalError ?? null,
+        retrieved: (p.memories || []).map((m) => ({
+          text: m.text,
+          score: m.fusedScore ?? m.score ?? null
+        }))
+      }))
+    }, null, 2)
+  )
+  console.log(`[conv ${convIdx}] ag retrieval dump → ${path.basename(retrievedPath)} (${prepared.length} rows)`)
+
   const batches = []
   for (let i = 0; i < prepared.length; i += BATCH_SIZE) batches.push(prepared.slice(i, i + BATCH_SIZE))
   console.log(`[conv ${convIdx}] ag judging ${batches.length} batches`)

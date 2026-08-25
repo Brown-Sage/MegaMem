@@ -43,6 +43,32 @@ No prompts to remember. No commands to learn. It just works.
 | **🛡️ Battle-tested pipeline** | Chunking, extraction, dedup, conflict detection, retry with exponential backoff, concurrency guards — built in |
 | **💸 Cheap to run** | Hugging Face inference + Groq's Llama 3.3 70B. No OpenAI bill |
 
+## 📊 Benchmarked on LoCoMo
+
+We evaluate MegaMem on [LoCoMo](https://github.com/snap-research/locomo) — multi-session conversations with adversarial questions designed to trick memory systems into hallucinating — using the same answer-generation scoring as Mem0's published methodology.
+
+<div align="center">
+
+| Category | Score |
+|---|---|
+| **Overall accuracy** | **76.7%** |
+| Multi-hop reasoning | 76% |
+| Single-hop recall | 81% |
+| Temporal reasoning | 82% |
+| Open-domain questions | 74% |
+
+</div>
+
+**And the number nobody else reports: when a question references something that was never said, MegaMem refuses to guess instead of hallucinating an answer.** That refusal path — an LLM relevance gate between retrieval and generation — is built into every response, not bolted on.
+
+Other things worth knowing:
+
+- **Honest by construction** — strict containment scoring (does a stored memory actually contain the answer) and lenient LLM-judged scoring both ship in the harness, so the numbers can't be cherry-picked
+- **Self-hosted, free-tier models** — this benchmark ran entirely on free API tiers (Mistral + Hugging Face), not a stack of paid frontier-model calls
+- **Reproducible** — `npm run eval:locomo` with per-question verdicts, retrieval dumps, and checkpointed resumption all in the repo
+
+> Full methodology, per-category breakdowns, and failure analysis live in `benchmarks/`. Numbers are from a single-conversation deep evaluation (conv0, 150 QA pairs); full-dataset runs are in progress.
+
 ## 🧰 The Five Tools
 
 MegaMem exposes five tools over MCP. Your assistant learns to use them proactively — you never call them yourself.
