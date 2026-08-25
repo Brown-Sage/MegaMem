@@ -10,8 +10,12 @@
  *      required filter fields (sessionId, userId) — warns if userId missing
  *   5. Hugging Face embeddings respond
  *   6. Groq chat completions respond
+ *   7. End-to-end smoke test: memory_save → memory_search → memory_delete
+ *      round-trip through the real MCP pipeline (isolated sessionId bucket,
+ *      auto-cleanup; skipped with --skip-e2e / --skip-network or when env/Mongo
+ *      aren't healthy)
  *
- * Usage: npm run doctor   (or: node scripts/doctor.js [--skip-network])
+ * Usage: npm run doctor   (or: node scripts/doctor.js [--skip-network] [--skip-e2e])
  * Exit code 0 = all good, 1 = something needs fixing.
  */
 
@@ -21,6 +25,7 @@ const fs = require('fs')
 const path = require('path')
 
 const skipNetwork = process.argv.includes('--skip-network')
+const skipE2e = process.argv.includes('--skip-e2e') || skipNetwork
 
 const OK = '  \x1b[32m✔\x1b[0m'
 const BAD = '  \x1b[31m✖\x1b[0m'
@@ -77,6 +82,66 @@ const checkGroq = async () => {
   else if (res.status === 401) fail('Groq rejected the API key (401)')
   else if (res.status === 429) warn('Groq rate limited (429) — key valid but quota exhausted right now')
   else fail(`Groq check failed: HTTP ${res.status}`)
+}
+
+// 7 — End-to-end smoke test: exercise the real MCP pipeline
+//     memory_save → memory_search → memory_delete against the live store.
+//     Skipped automatically when Mongo/HF aren't healthy; opt out with --skip-e2e.
+const callTool = async (name, args) => {
+  const { handleJsonRpc } = require('../src/services/mcpToolService')
+  const response = await handleJsonRpc({
+    jsonrpc: '2.0', id: 1,
+    method: 'tools/call',
+    params: { name, arguments: args }
+  })
+  if (response.error) throw new Error(`${name}: ${response.error.message}`)
+  const payload = JSON.parse(response.result.content[0].text)
+  if (response.result.isError) throw new Error(`${name}: ${payload}`)
+  return payload
+}
+
+const checkEndToEnd = async () => {
+  const mongoose = require('mongoose')
+  const Memory = require('../src/models/Memory')
+  await mongoose.connect(process.env.MONGO_URI, { serverSelectionTimeoutMS: 8000 })
+
+  // Isolated bucket so the probe never touches user data.
+  const SESSION_ID = `doctor-e2e-${Date.now()}`
+  const TEXT = 'Doctor e2e probe fact: Ravi keeps his hiking boots in the garage loft.'
+
+  try {
+    // save — must go through dedup + conflict detection + persist
+    const saved = await callTool('memory_save', { text: TEXT, sessionId: SESSION_ID })
+    if (!['create', 'update'].includes(saved.action)) {
+      throw new Error(`save returned action=${saved.action} (expected create/update)`)
+    }
+    pass(`memory_save OK (${saved.action})`)
+
+    // search — semantic retrieval must surface it above threshold.
+    // Atlas indexing can lag ~3s after write; poll briefly before failing.
+    let hit = null
+    for (let attempt = 1; attempt <= 5 && !hit; attempt++) {
+      const found = await callTool('memory_search', {
+        query: 'Where does Ravi keep his hiking boots?', topK: 5,
+        sessionId: SESSION_ID
+      })
+      hit = (found.memories || []).find((m) => m.sessionId === SESSION_ID)
+      if (!hit) await new Promise((r) => setTimeout(r, attempt * 1500))
+    }
+    if (!hit) fail('memory_search did not return the just-saved memory within 15s')
+    else pass(`memory_search OK (score=${typeof hit.score === 'number' ? hit.score.toFixed(3) : hit.score})`)
+
+    // delete — ownership-scoped removal must actually remove it
+    const del = await callTool('memory_delete', { memoryId: saved.memoryId })
+    if (!del.deleted) throw new Error('delete returned deleted=false')
+    const stillThere = await Memory.countDocuments({ _id: saved.memoryId })
+    if (stillThere !== 0) throw new Error('document still exists after delete')
+    pass('memory_delete OK (verified gone from DB)')
+  } finally {
+    // Never leave probe residue behind, even on failure.
+    await Memory.deleteMany({ sessionId: SESSION_ID }).catch(() => {})
+    await mongoose.disconnect().catch(() => {})
+  }
 }
 
 const main = async () => {
@@ -169,6 +234,18 @@ const main = async () => {
         fail(`${label} check error: ${err.message}`)
       }
     }
+  }
+
+  // 7 — End-to-end smoke test (needs Mongo + HF embeddings; skips otherwise)
+  if (!skipE2e && envComplete && process.env.MONGO_URI && process.env.HUGGINGFACE_API_KEY) {
+    section('End-to-end (save → search → delete)')
+    try {
+      await checkEndToEnd()
+    } catch (err) {
+      fail(`e2e smoke test failed: ${err.message}`)
+    }
+  } else if (!skipE2e && !envComplete) {
+    console.log('\n(End-to-end check skipped — fix the environment errors above first)')
   }
 
   section('Summary')
