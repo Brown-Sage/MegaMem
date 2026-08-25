@@ -4,6 +4,7 @@ const { completeChat } = require('./groqService')
 const { currentUserId } = require('../utils/ownership')
 const { userSessionId, workspaceSessionId, layerLabel } = require('../utils/sessionId')
 const { child } = require('../utils/log')
+const { bump } = require('../utils/counters')
 
 const log = child('retrieve')
 
@@ -187,12 +188,12 @@ const relevanceGate = async (query, memories) => {
     if (!verdict) {
       return { gated: true }
     }
-    return { gated: false }
+    return { gated: false, passed: true }
   } catch (err) {
     // Fail open: if the gate itself errors, keep the vector results rather
     // than losing good retrievals because the judge is down.
     log.warn({ err: err.message }, 'relevance gate error; keeping results')
-    return { gated: false }
+    return { gated: false, failedOpen: true }
   }
 }
 
@@ -243,11 +244,15 @@ const retrieveMemory = async (query, sessionIdOrIds, topK = 5, minScore = DEFAUL
 
   if (ranked.length > 0 && useGate) {
     // Gate only fires when we would otherwise answer from memory.
+    bump('gate.fired', sessionIds[0])
     const verdict = await relevanceGate(query, ranked)
     if (verdict.gated) {
+      bump('gate.gated', sessionIds[0])
       log.info({ query: query.slice(0, 80) }, 'relevance gate: no memory answers this; returning empty')
       return []
     }
+    if (verdict.failedOpen) bump('gate.failedOpen', sessionIds[0])
+    else bump('gate.passed', sessionIds[0])
   }
 
   return ranked

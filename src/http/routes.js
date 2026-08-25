@@ -4,6 +4,7 @@ const { chatWithMemory } = require('../services/memoryChatService')
 const { handleJsonRpc, MEMORY_TOOLS } = require('../services/mcpToolService')
 const { validate, chatBodySchema } = require('../validation/schemas')
 const { HttpError, asyncRoute } = require('./errors')
+const { snapshot: countersSnapshot } = require('../utils/counters')
 
 const router = Router()
 
@@ -11,8 +12,13 @@ router.get('/', (req, res) => {
   res.json({
     name: 'megamem',
     version: '1.0.0',
-    endpoints: ['/chat', '/mcp', '/mcp/sse', '/tools']
+    endpoints: ['/chat', '/mcp', '/mcp/sse', '/tools', '/stats']
   })
+})
+
+// R1 pipeline observability — in-process counters since server start.
+router.get('/stats', (req, res) => {
+  res.json(countersSnapshot())
 })
 
 router.post('/chat', asyncRoute(async (req, res) => {

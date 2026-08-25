@@ -248,6 +248,26 @@ const main = async () => {
     console.log('\n(End-to-end check skipped — fix the environment errors above first)')
   }
 
+  // R1 observability — show pipeline counters. After a live e2e run these
+  // must be non-zero; zero counters after real traffic means the wiring is
+  // broken (the exact silent-failure mode this module exists to catch).
+  section('Pipeline counters')
+  const { snapshot: countersSnapshot } = require('../src/utils/counters')
+  const stats = countersSnapshot()
+  const active = Object.entries(stats.global).filter(([, v]) => v > 0)
+  if (active.length === 0) {
+    console.log(`  (no activity since ${stats.startedAt})`)
+  } else {
+    for (const [key, value] of active) console.log(`  ${key}: ${value}`)
+  }
+  if (!skipE2e && envComplete && process.env.MONGO_URI && process.env.HUGGINGFACE_API_KEY) {
+    const savedCount = stats.global['saves.create'] + stats.global['saves.update']
+    if (savedCount >= 1) pass('counters recorded the e2e save')
+    else fail('counters did NOT record the e2e save — counter wiring is broken')
+    if (stats.global['searches.count'] >= 1) pass('counters recorded the e2e search')
+    else fail('counters did NOT record the e2e search — counter wiring is broken')
+  }
+
   section('Summary')
   if (failed) {
     console.log('\nSome checks failed — fix the ✖ items above and re-run: npm run doctor\n')

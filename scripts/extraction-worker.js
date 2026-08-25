@@ -45,15 +45,26 @@ const main = async () => {
   const mongoose = require('mongoose')
   const { persistExtractedMemories } = require('../src/services/memoryChatService')
 
+  // R2: union the session write logs for every bucket this run can target,
+  // so facts the agent already saved mid-session are skipped pre-embed.
+  // Missing logs degrade silently to the old behavior.
+  const { readSessionWrites } = require('../src/utils/sessionWriteLog')
+  const layerIds = (user && workspace)
+    ? [user, workspace]
+    : require('../src/utils/sessionId').resolveSessionIds(undefined).ids
+  const skipDedupKeys = new Set(layerIds.flatMap((id) => readSessionWrites(id)))
+
   await connectDB()
   try {
     const results = await persistExtractedMemories({
       conversation,
       ...(user && workspace ? { userId: user, workspaceId: workspace } : {}),
+      skipDedupKeys,
       actor: 'hook'
     })
     const saved = results.filter(r => r.action === 'create' || r.action === 'update' || r.action === 'delete')
-    console.log(`[extraction-worker] ${saved.length} memories saved (user=${user || 'default'} workspace=${workspace || 'default'})`)
+    const skippedByLog = results.filter(r => r.reason === 'Already captured earlier in this session.').length
+    console.log(`[extraction-worker] ${saved.length} memories saved, ${skippedByLog} skipped by session write log (user=${user || 'default'} workspace=${workspace || 'default'})`)
   } finally {
     await mongoose.disconnect()
   }

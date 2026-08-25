@@ -7,9 +7,11 @@ const { getProfile } = require('./profileService')
 const { embedText } = require('./embedService')
 const { computeDedupKey } = require('../utils/dedupKey')
 const { recordWrite, checkRecentDuplicate, getRecentCandidates } = require('../utils/recentWrites')
+const { recordSessionWrite } = require('../utils/sessionWriteLog')
 const { validate, toolArgsSchema } = require('../validation/schemas')
 const { resolveSessionIds, targetSessionId, layerLabel } = require('../utils/sessionId')
 const { currentUserId } = require('../utils/ownership')
+const { bump } = require('../utils/counters')
 const { MEMORY_TYPES } = require('../constants/memoryTypes')
 const Memory = require('../models/Memory')
 
@@ -135,6 +137,11 @@ const callMemorySearch = async (args) => {
     throw new Error('memory_search requires query')
   }
 
+  // Voluntary agent-initiated searches — the before/after metric for recall
+  // improvements (profile-in-search etc.). Hook-driven retrieval counts
+  // separately as hook.*; generic session-start searches don't pollute this.
+  bump('searches.count', args.sessionId || null)
+
   const memories = await retrieveMemory(query, layers.ids, topK)
   if (memories.length === 0) {
     return toolCallText(JSON.stringify({
@@ -179,6 +186,7 @@ const callMemorySave = async (args) => {
   // Layer 1 — exact duplicate (case/punctuation insensitive, DB-indexed).
   const existing = await Memory.findOne({ userId: currentUserId(), sessionId, dedupKey, status: 'active' })
   if (existing) {
+    bump('saves.skip', sessionId)
     return toolCallText(JSON.stringify({
       action: 'skip',
       memoryId: existing._id.toString(),
@@ -190,6 +198,7 @@ const callMemorySave = async (args) => {
   // Layer 2 — recent-writes buffer closes the ~3s Atlas indexing gap.
   const recent = checkRecentDuplicate({ sessionId, dedupKey, embedding })
   if (recent.duplicate) {
+    bump('saves.skip', sessionId)
     return toolCallText(JSON.stringify({
       action: 'skip',
       memoryId: null,
@@ -213,12 +222,21 @@ const callMemorySave = async (args) => {
   })
 
   if (applied.action === 'create' || applied.action === 'update') {
+    const writtenKey = computeDedupKey(applied.memory?.text || text)
     recordWrite({
       sessionId,
       memoryId: applied.memory?._id?.toString() || null,
-      dedupKey: computeDedupKey(applied.memory?.text || text),
+      dedupKey: writtenKey,
       embedding
     })
+    // R2: log cross-process so the session-end extractor skips this fact.
+    recordSessionWrite(sessionId, writtenKey)
+  }
+
+  if (applied.action === 'create' || applied.action === 'update' || applied.action === 'delete') {
+    bump(`saves.${applied.action}`, sessionId)
+  } else {
+    bump('saves.skip', sessionId)
   }
 
   return toolCallText(JSON.stringify({
@@ -381,6 +399,7 @@ const handleToolsCall = async (id, params) => {
     const content = await handler(args)
     return jsonRpcResult(id, content)
   } catch (error) {
+    if (name === 'memory_save') bump('saves.error')
     return jsonRpcResult(id, toolCallError(error.message))
   }
 }

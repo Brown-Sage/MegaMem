@@ -17,6 +17,8 @@ const { parseSessionDate, resolveEventDate, bakeResolvedDate } = require('../uti
 const { computeDedupKey } = require('../utils/dedupKey')
 const { embedText } = require('./embedService')
 const { recordWrite, checkRecentDuplicate, getRecentCandidates } = require('../utils/recentWrites')
+const { recordSessionWrite } = require('../utils/sessionWriteLog')
+const { bump } = require('../utils/counters')
 const { resolveSessionIds, targetSessionId } = require('../utils/sessionId')
 const { child } = require('../utils/log')
 
@@ -46,13 +48,29 @@ const extractionChunks = (conversation) => dedupeChunks(chunkText(conversation, 
   maxChunks: EXTRACTION_MAX_CHUNKS
 }))
 
-const persistExtractedMemories = async ({
+// R1 observability wrapper: every pipeline run is counted, success or fail.
+const persistExtractedMemories = async (args) => {
+  bump('extraction.runs')
+  try {
+    const results = await runPersistPipeline(args)
+    bump('extraction.completed')
+    return results
+  } catch (error) {
+    bump('extraction.failed')
+    throw error
+  }
+}
+
+const runPersistPipeline = async ({
   conversation,
   sessionId,
   userId,
   workspaceId,
   scope,
-  actor = 'mcp'
+  actor = 'mcp',
+  // R2: dedupKeys already written during this active session (from the
+  // cross-process write log). Facts matching are skipped before embed.
+  skipDedupKeys = null
 }) => {
   const layers = layersForPersist({ sessionId, userId, workspaceId })
   const chunks = extractionChunks(conversation)
@@ -117,12 +135,14 @@ const persistExtractedMemories = async ({
 
   log.info({ count: extracted.length }, 'extraction merged')
   log.debug({ memories: extracted.map(m => ({ type: m.type, confidence: m.confidence, text: m.text })) }, 'merged memory detail')
+  bump('extraction.factsExtracted', sessionId || null)
 
   const results = []
   const seenDedupKeys = new Set()
 
   for (const memory of extracted) {
     if (memory.confidence < MIN_EXTRACTION_CONFIDENCE) {
+      bump('saves.skip', targetSessionId(layers, memory.type, scope))
       results.push({
         action: 'skip',
         text: memory.text,
@@ -135,10 +155,19 @@ const persistExtractedMemories = async ({
     const dedupKey = computeDedupKey(memory.text)
 
     if (seenDedupKeys.has(dedupKey)) {
+      bump('saves.skip', targetId)
       results.push({ action: 'skip', text: memory.text, reason: 'Duplicate within same extraction batch.' })
       continue
     }
     seenDedupKeys.add(dedupKey)
+
+    // R2 — facts the agent already saved mid-session are skipped before any
+    // embed/conflict tokens are spent rediscovering them.
+    if (skipDedupKeys && skipDedupKeys.has(dedupKey)) {
+      bump('extraction.skippedByWriteLog', targetId)
+      results.push({ action: 'skip', text: memory.text, reason: 'Already captured earlier in this session.' })
+      continue
+    }
 
     // Layer 2 — recent-writes race check before spending LLM tokens.
     let embedding = null
@@ -151,6 +180,7 @@ const persistExtractedMemories = async ({
     if (embedding) {
       const recent = checkRecentDuplicate({ sessionId: targetId, dedupKey, embedding })
       if (recent.duplicate) {
+        bump('saves.skip', targetId)
         results.push({ action: 'skip', text: memory.text, reason: recent.reason })
         continue
       }
@@ -182,6 +212,16 @@ const persistExtractedMemories = async ({
           dedupKey,
           embedding
         })
+        // R2: mid-session writes (actor=mcp) are logged cross-process so the
+        // detached session-end worker can skip these facts. The hook's own
+        // extraction run doesn't re-log — it is the consumer, not the producer.
+        if (actor === 'mcp') recordSessionWrite(targetId, dedupKey)
+      }
+
+      if (applied.action === 'create' || applied.action === 'update' || applied.action === 'delete') {
+        bump(`saves.${applied.action}`, targetId)
+      } else {
+        bump('saves.skip', targetId)
       }
 
       results.push({
@@ -194,6 +234,7 @@ const persistExtractedMemories = async ({
       })
     } catch (error) {
       log.warn({ err: error.message }, 'memory persistence failed')
+      bump('saves.error', targetId)
       results.push({
         action: 'error',
         text: memory.text,
