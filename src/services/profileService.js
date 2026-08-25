@@ -68,6 +68,13 @@ const compileProfile = async (sessionId, memories) => {
 // last compile, or when a forced refresh is requested.
 const ACTIVE_FILTER = { status: 'active' }
 
+// Deletions shrink memoryCount below the cached watermark, which makes the
+// naive difference go negative and look "fresh" forever — a profile that
+// asserts a deleted fact would never refresh. Any net decrease is stale.
+const isProfileStale = ({ cachedMemoryCount = 0, memoryCount = 0 }) =>
+  memoryCount - cachedMemoryCount >= REFRESH_AFTER_NEW_MEMORIES ||
+  memoryCount < cachedMemoryCount
+
 const getProfile = async (sessionId, { force = false } = {}) => {
   const ownerFilter = { sessionId, userId: currentUserId() }
   const memoryCount = await Memory.countDocuments({ ...ownerFilter, ...ACTIVE_FILTER })
@@ -77,11 +84,11 @@ const getProfile = async (sessionId, { force = false } = {}) => {
 
   const cached = await Profile.findOne({ userId: currentUserId(), sessionId }).lean()
 
-  if (!force && cached) {
-    const newSinceCompile = memoryCount - (cached.memoryCount || 0)
-    if (newSinceCompile < REFRESH_AFTER_NEW_MEMORIES) {
-      return cached.text
-    }
+  if (!force && cached && !isProfileStale({
+    cachedMemoryCount: cached.memoryCount || 0,
+    memoryCount
+  })) {
+    return cached.text
   }
 
   const memories = await Memory.find({ ...ownerFilter, ...ACTIVE_FILTER })
@@ -101,6 +108,7 @@ const getProfile = async (sessionId, { force = false } = {}) => {
 module.exports = {
   getProfile,
   compileProfile,
+  isProfileStale,
   MIN_MEMORIES_FOR_PROFILE,
   REFRESH_AFTER_NEW_MEMORIES
 }
