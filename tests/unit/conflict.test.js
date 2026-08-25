@@ -1,6 +1,6 @@
 const { test } = require('node:test')
 const assert = require('node:assert')
-const { normalizeDecision, buildConflictMessages } = require('../../src/services/conflictService')
+const { normalizeDecision, buildConflictMessages, normalizeCandidates } = require('../../src/services/conflictService')
 
 test('normalizeDecision falls back to create on unknown action', () => {
   const d = normalizeDecision({ action: 'nuke' })
@@ -51,4 +51,59 @@ test('buildConflictMessages includes actions and JSON shape', () => {
   assert.match(messages[1].content, /create\|update\|skip\|delete/)
   assert.match(messages[1].content, /uses vim/)
   assert.match(messages[1].content, /uses emacs/)
+})
+
+test('normalizeCandidates keeps all distinct vector rows (regression: dedup keyed on undefined id)', () => {
+  const vectorResults = [
+    { _id: 'a', text: 'uses vim', status: 'active', score: 0.9 },
+    { _id: 'b', text: 'uses emacs', status: 'active', score: 0.8 },
+    { _id: 'c', text: 'uses nano', status: 'active', score: 0.7 }
+  ]
+  const out = normalizeCandidates({ vectorResults, unindexed: [], minScore: 0.45 })
+  assert.equal(out.length, 3)
+  assert.deepEqual(out.map(c => c.id), ['a', 'b', 'c'])
+})
+
+test('normalizeCandidates dedups the same memory across vector and unindexed sources', () => {
+  const out = normalizeCandidates({
+    vectorResults: [{ _id: 'x', text: 'uses vim', status: 'active', score: 0.9 }],
+    unindexed: [{ id: 'x', text: 'uses vim', status: 'active', score: 1, recent: true }],
+    minScore: 0.45
+  })
+  assert.equal(out.length, 1)
+  assert.equal(out[0].id, 'x')
+})
+
+test('normalizeCandidates drops deleted and low-score non-recent rows', () => {
+  const out = normalizeCandidates({
+    vectorResults: [
+      { _id: 'a', text: 'deleted', status: 'deleted', score: 0.9 },
+      { _id: 'b', text: 'low score', status: 'active', score: 0.2 },
+      { _id: 'c', text: 'kept', status: 'active', score: 0.8 }
+    ],
+    unindexed: [],
+    minScore: 0.45
+  })
+  assert.deepEqual(out.map(c => c.id), ['c'])
+})
+
+test('normalizeCandidates keeps recent rows even when score is null', () => {
+  const out = normalizeCandidates({
+    vectorResults: [],
+    unindexed: [{ id: 'r', text: 'recent', status: 'active', score: null, recent: true }],
+    minScore: 0.45
+  })
+  assert.equal(out.length, 1)
+  assert.equal(out[0].id, 'r')
+  assert.equal(out[0].recent, true)
+})
+
+test('normalizeCandidates keeps unindexed rows carrying only id (no _id)', () => {
+  const out = normalizeCandidates({
+    vectorResults: [],
+    unindexed: [{ id: 'solo', text: 'only id', status: 'active', score: 1, recent: true }],
+    minScore: 0.45
+  })
+  assert.equal(out.length, 1)
+  assert.equal(out[0].id, 'solo')
 })

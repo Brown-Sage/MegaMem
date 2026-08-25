@@ -12,6 +12,32 @@ const CONFLICT_ACTIONS = ['create', 'update', 'skip', 'delete']
 // directly by dedupKey/recency and merged into the candidate pool.
 const UNINDEXED_WINDOW_MS = 60 * 1000
 
+// Merge vector + unindexed candidates, drop non-active/low-score rows, dedup by
+// stable id, and normalize shape. Vector rows carry `_id` (no `id` field — the
+// $project stage emits `_id` only), unindexed rows carry `id`. Keying on
+// `m.id || String(m._id)` covers both so the same memory surfaced by both
+// channels collapses to one entry.
+const normalizeCandidates = ({ vectorResults, unindexed, minScore }) => {
+  const seen = new Set()
+  return [...vectorResults, ...unindexed]
+    .filter(memory => !memory.status || memory.status === 'active')
+    .filter(memory => typeof memory.score !== 'number' || memory.score >= minScore || memory.recent === true)
+    .filter(memory => {
+      const key = memory.id || String(memory._id)
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .map(memory => ({
+      id: memory.id || String(memory._id),
+      text: memory.text,
+      eventAt: memory.eventAt || null,
+      createdAt: memory.createdAt,
+      score: memory.score,
+      recent: memory.recent || false
+    }))
+}
+
 const findSimilarMemories = async ({ text, sessionId, topK = 8, minScore = 0.45, queryEmbedding = null }) => {
   const queryVector = queryEmbedding || await embedText(text)
 
@@ -62,23 +88,7 @@ const findSimilarMemories = async ({ text, sessionId, topK = 8, minScore = 0.45,
   // Post-filter on status: Atlas $vectorSearch only supports filter fields
   // declared in the Search index; 'status' isn't one (yet). Candidate sets
   // are small so filtering here is fine at personal scale.
-  const seen = new Set()
-  return [...results, ...unindexed]
-    .filter(memory => !memory.status || memory.status === 'active')
-    .filter(memory => typeof memory.score !== 'number' || memory.score >= minScore || memory.recent === true)
-    .filter(memory => {
-      if (seen.has(memory.id)) return false
-      seen.add(memory.id)
-      return true
-    })
-    .map(memory => ({
-      id: memory.id || memory._id.toString(),
-      text: memory.text,
-      eventAt: memory.eventAt || null,
-      createdAt: memory.createdAt,
-      score: memory.score,
-      recent: memory.recent || false
-    }))
+  return normalizeCandidates({ vectorResults: results, unindexed, minScore })
 }
 
 const buildConflictMessages = ({ newMemory, candidates }) => [
@@ -206,6 +216,7 @@ const detectMemoryConflict = async ({ memory, sessionId, topK = 8, minScore = 0.
 module.exports = {
   detectMemoryConflict,
   findSimilarMemories,
+  normalizeCandidates,
   buildConflictMessages,
   normalizeDecision
 }
