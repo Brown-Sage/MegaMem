@@ -54,25 +54,27 @@ const addMonths = (date, months) => {
 }
 
 // "7 May 2023", "May 7, 2023", "May 2023", "7 May", "2023-05-07"
-const parseAbsoluteDate = (text, fallbackYear = null) => {
+// Returns { date, precision } where precision is 'day' | 'month'; null when
+// nothing parses. Callers that only need the Date use parseAbsoluteDate.
+const parseAbsoluteDateDetailed = (text, fallbackYear = null) => {
   const trimmed = String(text).trim()
 
   const iso = /(\d{4})-(\d{1,2})-(\d{1,2})/.exec(trimmed)
   if (iso) {
     const date = toDate(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]))
-    if (date) return date
+    if (date) return { date, precision: 'day' }
   }
 
   const dMy = new RegExp(`(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_RE})\\.?,?\\s+(\\d{4})`, 'i').exec(trimmed)
   if (dMy) {
     const date = toDate(Number(dMy[3]), MONTHS[dMy[2].toLowerCase()], Number(dMy[1]))
-    if (date) return date
+    if (date) return { date, precision: 'day' }
   }
 
   const mdY = new RegExp(`(${MONTH_RE})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(\\d{4})`, 'i').exec(trimmed)
   if (mdY) {
     const date = toDate(Number(mdY[3]), MONTHS[mdY[1].toLowerCase()], Number(mdY[2]))
-    if (date) return date
+    if (date) return { date, precision: 'day' }
   }
 
   const dM = new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_RE})\\.?(?:\\s+(\\d{4}))?\\b`, 'i').exec(trimmed)
@@ -80,18 +82,22 @@ const parseAbsoluteDate = (text, fallbackYear = null) => {
     const year = dM[3] ? Number(dM[3]) : fallbackYear
     if (year) {
       const date = toDate(year, MONTHS[dM[2].toLowerCase()], Number(dM[1]))
-      if (date) return date
+      if (date) return { date, precision: 'day' }
     }
   }
 
+  // "May 2023" — month known, day is not; Jan-1 anchor but flagged month.
   const mM = new RegExp(`\\b(?<!\\d{1,2}\\s)(${MONTH_RE})\\.?,?\\s+(\\d{4})\\b`, 'i').exec(trimmed)
   if (mM) {
     const date = toDate(Number(mM[2]), MONTHS[mM[1].toLowerCase()], 1)
-    if (date) return date
+    if (date) return { date, precision: 'month' }
   }
 
   return null
 }
+
+const parseAbsoluteDate = (text, fallbackYear = null) =>
+  parseAbsoluteDateDetailed(text, fallbackYear)?.date ?? null
 
 // Pulls the session date out of a header like
 // "Conversation session (7 May 2023):" — tolerant of format drift.
@@ -167,28 +173,35 @@ const resolveRelativeExpression = (text, base) => {
   return null
 }
 
-// Resolve an event date for a memory from its own text plus the date of the
-// session it came from. Returns a UTC Date or null when nothing resolvable.
-const resolveEventDate = (text, sessionDate = null) => {
-  if (!text) return null
+// Precision-aware resolution (W7). "2020 sometime" must not masquerade as
+// "2020-01-01": year-only hits anchor to Jan 1 UTC but carry
+// precision:'year' so downstream ordering/queries can respect the fuzziness.
+// precision ∈ 'day' | 'month' | 'year' | null.
+const resolveEventDateDetailed = (text, sessionDate = null) => {
+  if (!text) return { date: null, precision: null }
   const haystack = String(text)
 
   if (sessionDate) {
     const weekday = resolveWeekdayRelation(haystack, sessionDate)
-    if (weekday) return weekday
+    if (weekday) return { date: weekday, precision: 'day' }
 
     const relative = resolveRelativeExpression(haystack, sessionDate)
-    if (relative) return relative
+    if (relative) return { date: relative, precision: 'day' }
   }
 
-  const absolute = parseAbsoluteDate(haystack)
+  const absolute = parseAbsoluteDateDetailed(haystack)
   if (absolute) return absolute
 
   const yearOnly = /\b(19\d{2}|20\d{2})\b/.exec(haystack)
-  if (yearOnly) return toDate(Number(yearOnly[1]), 0, 1)
+  if (yearOnly) return { date: toDate(Number(yearOnly[1]), 0, 1), precision: 'year' }
 
-  return null
+  return { date: null, precision: null }
 }
+
+// Resolve an event date for a memory from its own text plus the date of the
+// session it came from. Returns a UTC Date or null when nothing resolvable.
+const resolveEventDate = (text, sessionDate = null) =>
+  resolveEventDateDetailed(text, sessionDate).date
 
 // Does the text use a relative time expression ("next month", "two weeks ago",
 // "last Friday") whose meaning depends on when it was said?
@@ -230,7 +243,9 @@ const bakeResolvedDate = (text, eventAt) => {
 module.exports = {
   parseSessionDate,
   parseAbsoluteDate,
+  parseAbsoluteDateDetailed,
   resolveEventDate,
+  resolveEventDateDetailed,
   bakeResolvedDate,
   hasRelativeTimePhrase,
   addDays,

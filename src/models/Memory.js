@@ -19,6 +19,9 @@ const memorySchema = new mongoose.Schema({
   status: { type: String, enum: MEMORY_STATUSES, default: 'active' },
   dedupKey: { type: String, default: '' },
   eventAt: { type: Date, default: null },
+  // W7: how precise eventAt is. Year-only facts anchor to Jan 1 UTC but must
+  // never be read as "January 1st" — this marker keeps the fuzziness honest.
+  datePrecision: { type: String, enum: ['day', 'month', 'year'], default: null },
   validUntil: { type: Date, default: null },
   deletedAt: { type: Date, default: null },
   supersededBy: { type: String, default: null },

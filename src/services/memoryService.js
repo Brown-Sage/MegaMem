@@ -30,7 +30,7 @@ const recordHistory = ({ memoryId, sessionId, event, oldMemory = null, newMemory
     actor
   }).catch((err) => log.warn({ err: err.message, memoryId, event }, 'history write failed'))
 
-const saveMemory = async (text, sessionId, type = 'other', { actor = 'mcp', eventAt = null, embedding = null, importance = null, confidence = null } = {}) => {
+const saveMemory = async (text, sessionId, type = 'other', { actor = 'mcp', eventAt = null, datePrecision = null, embedding = null, importance = null, confidence = null } = {}) => {
   const vector = embedding || await embedText(text)
   const memory = new Memory({
     userId: currentUserId(),
@@ -40,6 +40,7 @@ const saveMemory = async (text, sessionId, type = 'other', { actor = 'mcp', even
     embedding: vector,
     dedupKey: computeDedupKey(text),
     eventAt: eventAt || undefined,
+    datePrecision: eventAt && datePrecision ? datePrecision : undefined,
     importance: importance != null ? normalizeImportance(importance) : undefined,
     confidence: confidence != null ? normalizeConfidence(confidence) : undefined
   })
@@ -55,7 +56,7 @@ const saveMemory = async (text, sessionId, type = 'other', { actor = 'mcp', even
   return memory
 }
 
-const updateMemory = async (memoryId, text, type, { actor = 'mcp', embedding = null, eventAt = null, importance = null, confidence = null } = {}) => {
+const updateMemory = async (memoryId, text, type, { actor = 'mcp', embedding = null, eventAt = null, datePrecision = null, importance = null, confidence = null } = {}) => {
   const existing = await Memory.findOne({ _id: memoryId, userId: currentUserId() })
   if (!existing) {
     throw new Error(`Memory not found for update: ${memoryId}`)
@@ -72,6 +73,7 @@ const updateMemory = async (memoryId, text, type, { actor = 'mcp', embedding = n
   }
   if (eventAt) {
     existing.eventAt = eventAt
+    if (datePrecision) existing.datePrecision = datePrecision
   }
   if (importance != null) {
     existing.importance = normalizeImportance(importance)
@@ -129,6 +131,7 @@ const applyMemoryDecision = async ({
   fallbackText,
   type,
   eventAt = null,
+  datePrecision = null,
   importance = null,
   confidence = null,
   minConfidence = 0.75,
@@ -171,7 +174,7 @@ const applyMemoryDecision = async ({
 
     return {
       action: 'update',
-      memory: await updateMemory(decision.targetMemoryId, text.trim(), resolvedType, { actor, eventAt, importance, confidence }),
+      memory: await updateMemory(decision.targetMemoryId, text.trim(), resolvedType, { actor, eventAt, datePrecision, importance, confidence }),
       reason: decision.reason || 'Memory updated.'
     }
   }
@@ -190,7 +193,7 @@ const applyMemoryDecision = async ({
     let created = null
     if (decision.memoryText && decision.memoryText.trim() &&
         computeDedupKey(decision.memoryText) !== deleted.dedupKey) {
-      created = await saveMemory(decision.memoryText.trim(), sessionId, resolvedType, { actor, eventAt, importance, confidence })
+      created = await saveMemory(decision.memoryText.trim(), sessionId, resolvedType, { actor, eventAt, datePrecision, importance, confidence })
     }
 
     return {
@@ -203,7 +206,7 @@ const applyMemoryDecision = async ({
 
   return {
     action: 'create',
-    memory: await saveMemory(text.trim(), sessionId, resolvedType, { actor, eventAt, importance, confidence }),
+    memory: await saveMemory(text.trim(), sessionId, resolvedType, { actor, eventAt, datePrecision, importance, confidence }),
     reason: decision.reason || 'Memory created.'
   }
 }

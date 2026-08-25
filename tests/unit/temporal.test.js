@@ -150,3 +150,51 @@ test('bakeResolvedDate handles null/invalid input', () => {
   assert.equal(bakeResolvedDate(null, new Date()), null)
   assert.equal(bakeResolvedDate('next month trip', null), 'next month trip')
 })
+
+// --- W7: precision-aware resolution ---
+const {
+  parseAbsoluteDateDetailed,
+  resolveEventDateDetailed
+} = require('../../src/utils/temporal')
+
+test('parseAbsoluteDateDetailed: full dates are day-precision', () => {
+  for (const t of ['7 May 2023', 'May 7th, 2023', '2023-05-07']) {
+    const r = parseAbsoluteDateDetailed(t)
+    assert.equal(r.precision, 'day', t)
+    assert.equal(r.date.getUTCFullYear(), 2023)
+  }
+})
+
+test('parseAbsoluteDateDetailed: month-year is month-precision', () => {
+  const r = parseAbsoluteDateDetailed('June 2023')
+  assert.equal(r.precision, 'month')
+  assert.equal(r.date.getUTCMonth(), 5)
+  assert.equal(r.date.getUTCDate(), 1)
+})
+
+test('resolveEventDateDetailed: year-only anchors Jan 1 but flags year precision', () => {
+  const r = resolveEventDateDetailed('Alice moved to Lisbon in 2020.')
+  assert.equal(r.precision, 'year')
+  assert.equal(r.date.getUTCFullYear(), 2020)
+  assert.equal(r.date.getUTCMonth(), 0)
+  assert.equal(r.date.getUTCDate(), 1)
+})
+
+test('resolveEventDateDetailed: relative phrases stay day-precision', () => {
+  const base = new Date(Date.UTC(2023, 4, 10))
+  const r = resolveEventDateDetailed('They met three years ago.', base)
+  assert.equal(r.precision, 'day')
+  assert.equal(r.date.getUTCFullYear(), 2020)
+})
+
+test('resolveEventDateDetailed: nothing resolvable returns nulls', () => {
+  const r = resolveEventDateDetailed('likes pottery')
+  assert.equal(r.date, null)
+  assert.equal(r.precision, null)
+})
+
+test('resolveEventDate wrapper still returns bare Date (back-compat)', () => {
+  const d = resolveEventDate('signed up in June 2023')
+  assert.ok(d instanceof Date)
+  assert.equal(d.getUTCFullYear(), 2023)
+})

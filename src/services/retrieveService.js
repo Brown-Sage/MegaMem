@@ -197,7 +197,18 @@ const relevanceGate = async (query, memories) => {
   }
 }
 
-const retrieveMemory = async (query, sessionIdOrIds, topK = 5, minScore = DEFAULT_MIN_SCORE, { relevanceGate: useGate = true } = {}) => {
+// Runner-ups from the fusion pool double as related-memory links (2b): they
+// already matched the query channels but lost the ranking cut. Zero extra
+// DB round-trips — they exist in memory before the slice.
+const pickRelated = (rankedPool, limit) =>
+  rankedPool.slice(0, limit).map((m) => ({
+    memoryId: m._id ? m._id.toString() : null,
+    text: m.text,
+    score: m.fusedScore,
+    layer: layerLabel(m.sessionId, m.layers)
+  }))
+
+const retrieveMemory = async (query, sessionIdOrIds, topK = 5, minScore = DEFAULT_MIN_SCORE, { relevanceGate: useGate = true, relatedLimit = 0 } = {}) => {
   const sessionIds = asSessionIds(sessionIdOrIds)
   if (sessionIds.length === 0) return []
 
@@ -236,11 +247,10 @@ const retrieveMemory = async (query, sessionIdOrIds, topK = 5, minScore = DEFAUL
   const primaryScore = (m) =>
     m.score != null ? m.score : LEXICAL_BASE + (LEXICAL_SPAN * m.lexicalOverlap)
 
-  const ranked = [...fused.values()]
-    .map((m) => ({ ...m, fusedScore: primaryScore(m) + importanceNudge(m) }))
+  const scored = [...fused.values()]
+    .map((m) => ({ ...m, layers, fusedScore: primaryScore(m) + importanceNudge(m) }))
     .sort((a, b) => b.fusedScore - a.fusedScore)
-    .slice(0, topK)
-    .map((m) => shapeResult(m, layers, m.score ?? null, m.fusedScore))
+  const ranked = scored.slice(0, topK).map((m) => shapeResult(m, layers, m.score ?? null, m.fusedScore))
 
   if (ranked.length > 0 && useGate) {
     // Gate only fires when we would otherwise answer from memory.
@@ -249,13 +259,20 @@ const retrieveMemory = async (query, sessionIdOrIds, topK = 5, minScore = DEFAUL
     if (verdict.gated) {
       bump('gate.gated', sessionIds[0])
       log.info({ query: query.slice(0, 80) }, 'relevance gate: no memory answers this; returning empty')
+      if (relatedLimit > 0) return { memories: [], related: [] }
       return []
     }
     if (verdict.failedOpen) bump('gate.failedOpen', sessionIds[0])
     else bump('gate.passed', sessionIds[0])
   }
 
+  if (relatedLimit > 0) {
+    // Related links come from the runner-up pool (never duplicates of hits),
+    // so gate-gated queries and thin stores naturally yield fewer/none.
+    return { memories: ranked, related: pickRelated(scored.slice(topK), relatedLimit) }
+  }
+
   return ranked
 }
 
-module.exports = { retrieveMemory, searchLexical: searchLexicalScored, relevanceGate, DEFAULT_MIN_SCORE }
+module.exports = { retrieveMemory, searchLexical: searchLexicalScored, relevanceGate, pickRelated, DEFAULT_MIN_SCORE }

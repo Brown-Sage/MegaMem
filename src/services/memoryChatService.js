@@ -13,7 +13,7 @@ const {
 const { detectMemoryConflict } = require('./conflictService')
 const { applyMemoryDecision } = require('./memoryService')
 const { chunkText, dedupeChunks } = require('../utils/chunker')
-const { parseSessionDate, resolveEventDate, bakeResolvedDate } = require('../utils/temporal')
+const { parseSessionDate, resolveEventDateDetailed, bakeResolvedDate } = require('../utils/temporal')
 const { computeDedupKey } = require('../utils/dedupKey')
 const { embedText } = require('./embedService')
 const { recordWrite, checkRecentDuplicate, getRecentCandidates } = require('../utils/recentWrites')
@@ -100,13 +100,17 @@ const runPersistPipeline = async ({
       })
 
       extracted.push(...chunkMemories.map((m) => {
-        const eventAt = m.eventAt || resolveEventDate(m.text, sessionDate)
+        // W7: resolution carries precision so year-only facts stay honest.
+        const resolved = m.eventAt
+          ? { date: m.eventAt, precision: null }
+          : resolveEventDateDetailed(m.text, sessionDate)
         return {
           ...m,
-          eventAt,
+          eventAt: resolved.date,
+          datePrecision: resolved.precision,
           // Gate/judge/prompts only see text — bake the resolved absolute
           // date into it so "next month" style facts are self-contained.
-          text: bakeResolvedDate(m.text, eventAt)
+          text: bakeResolvedDate(m.text, resolved.date)
         }
       }))
 
@@ -126,8 +130,15 @@ const runPersistPipeline = async ({
       existingTexts: extracted.map((m) => m.text)
     })
     extracted.push(...factSheet.map((m) => {
-      const eventAt = m.eventAt || resolveEventDate(m.text, sessionDate)
-      return { ...m, eventAt, text: bakeResolvedDate(m.text, eventAt) }
+      const resolved = m.eventAt
+        ? { date: m.eventAt, precision: null }
+        : resolveEventDateDetailed(m.text, sessionDate)
+      return {
+        ...m,
+        eventAt: resolved.date,
+        datePrecision: resolved.precision,
+        text: bakeResolvedDate(m.text, resolved.date)
+      }
     }))
   } catch (error) {
     log.warn({ err: error.message }, 'fact-sheet pipeline failed')
@@ -200,6 +211,7 @@ const runPersistPipeline = async ({
         fallbackText: memory.text,
         type: memory.type,
         eventAt: memory.eventAt,
+        datePrecision: memory.datePrecision,
         importance: memory.importance,
         confidence: memory.confidence,
         actor

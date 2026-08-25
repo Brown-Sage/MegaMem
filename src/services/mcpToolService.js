@@ -142,24 +142,46 @@ const callMemorySearch = async (args) => {
   // separately as hook.*; generic session-start searches don't pollute this.
   bump('searches.count', args.sessionId || null)
 
-  const memories = await retrieveMemory(query, layers.ids, topK)
-  if (memories.length === 0) {
-    return toolCallText(JSON.stringify({
-      count: 0,
-      memories: [],
-      note: 'No memories passed the relevance threshold.'
-    }, null, 2))
-  }
-  return toolCallText(JSON.stringify({
-    count: memories.length,
-    memories: memories.map(m => ({
+  // relatedLimit > 0 opts into the richer response shape: runner-up memories
+  // as related links. Profiles ride along (2a) — every voluntary search also
+  // carries "who is this user / what are this project's conventions".
+  const [result, profile, workspaceProfile] = await Promise.all([
+    retrieveMemory(query, layers.ids, topK, undefined, { relatedLimit: 6 }),
+    getProfile(layers.explicit || layers.userId).catch(() => null),
+    layers.explicit ? Promise.resolve(null) : getProfile(layers.workspaceId).catch(() => null)
+  ])
+
+  const payload = {
+    count: result.memories.length,
+    memories: result.memories.map(m => ({
       text: m.text,
       score: m.score,
       layer: m.layer,
       type: m.type,
       sessionId: m.sessionId
     }))
-  }, null, 2))
+  }
+
+  if (profile) payload.profile = profile
+  if (workspaceProfile) payload.workspaceProfile = workspaceProfile
+  if (result.related.length > 0) {
+    payload.related = result.related.map(m => ({
+      memoryId: m.memoryId,
+      text: m.text,
+      score: Number.isFinite(m.score) ? Number(m.score.toFixed(3)) : null,
+      layer: m.layer
+    }))
+  }
+
+  if (payload.count === 0 && !profile && !workspaceProfile && !(payload.related || []).length) {
+    return toolCallText(JSON.stringify({
+      count: 0,
+      memories: [],
+      note: 'No memories passed the relevance threshold.'
+    }, null, 2))
+  }
+
+  return toolCallText(JSON.stringify(payload, null, 2))
 }
 
 const callMemorySave = async (args) => {
