@@ -1,4 +1,5 @@
 const { sessionLayersForWorkspace } = require('./common')
+const { buildTopicIndex, writeTopicIndex } = require('./topic-index')
 const connectDB = require('../../src/config/db')
 const mongoose = require('mongoose')
 const { retrieveMemory } = require('../../src/services/retrieveService')
@@ -21,6 +22,18 @@ const main = async () => {
       getProfile(layers.workspaceId).catch(() => null),
       retrieveMemory('important preferences and project context', layers.ids, 5).catch(() => [])
     ])
+
+    // R4a: refresh the lexical topic index for future matchers/injectors.
+    // Strictly best-effort — never blocks or fails session start.
+    try {
+      const index = await buildTopicIndex({ Memory: require('../../src/models/Memory'), sessionIds: layers.ids })
+      await writeTopicIndex({
+        stateDir: require('path').join(__dirname, 'state'),
+        index
+      })
+    } catch (indexErr) {
+      console.error('[megamem session-start] topic-index:', indexErr.message)
+    }
 
     const sections = []
 
