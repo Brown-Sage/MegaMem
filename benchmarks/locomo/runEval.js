@@ -109,9 +109,13 @@ const mapPool = async (items, limit, worker) => {
   return results
 }
 
-// Single-conversation runs can pin an explicit sessionId (--skip-ingest
-// --session-id ...). All-convs runs derive deterministic per-conversation ids.
-const SESSION_ID = (SKIP_INGEST && getFlag('session-id'))
+// Single-conversation runs can pin an explicit sessionId (--session-id ...).
+// All-convs runs derive deterministic per-conversation ids.
+// NOTE: the explicit id applies to INGEST too (Amendment 2 of the reliability
+// plan): single-conv runs used to append to the shared -official bucket,
+// silently mixing memories across configs. Always pass a fresh --session-id
+// for clean runs, e.g. locomo-eval-conv0-clean-20260827.
+const SESSION_ID = getFlag('session-id')
   ? getFlag('session-id')
   : `locomo-eval-conv${CONV_INDEX}-${Date.now()}`
 
@@ -439,7 +443,10 @@ async function main () {
 
   // Deterministic per-conversation sessionIds — a resumed run must land on the
   // same store without consulting state that a crash could have lost.
-  const sessionIdFor = (convIdx) => `locomo-eval-conv${convIdx}-official`
+  // Explicit --session-id overrides this for single-conv clean runs.
+  const sessionIdFor = (convIdx) => (getFlag('session-id') && convIndexes.length === 1)
+    ? SESSION_ID
+    : `locomo-eval-conv${convIdx}-official`
 
   // ---- phase 1: ingest all conversations with a bounded pool ----
   if (!SKIP_INGEST) {

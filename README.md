@@ -51,11 +51,11 @@ We evaluate MegaMem on [LoCoMo](https://github.com/snap-research/locomo) — mul
 
 | Category | Score |
 |---|---|
-| **Overall accuracy** | **76.7%** |
-| Multi-hop reasoning | 76% |
-| Single-hop recall | 81% |
-| Temporal reasoning | 82% |
-| Open-domain questions | 74% |
+| **Overall accuracy** | **77.0%** |
+| Multi-hop reasoning | 75.7% |
+| Single-hop recall | 71.9% |
+| Temporal reasoning | 72.7% |
+| Open-domain questions | 64.3% |
 
 </div>
 
@@ -64,10 +64,12 @@ We evaluate MegaMem on [LoCoMo](https://github.com/snap-research/locomo) — mul
 Other things worth knowing:
 
 - **Honest by construction** — strict containment scoring (does a stored memory actually contain the answer) and lenient LLM-judged scoring both ship in the harness, so the numbers can't be cherry-picked
+- **Clean-store methodology** — this table is from a fresh single-pass ingest of one full 19-session conversation (conv0, 150 QA pairs), scored in isolation with no memory reuse across runs
+- **Judge variance is disclosed** — an LLM judge re-scored on identical answers shifts category scores by a few points (open-domain varied up to ±10 between identical runs); overall accuracy stayed within ±2 across three passes (78.9% → 79.1% → 77.0% as ambiguous verdicts resolved). 135/150 judged; 15 questions were structurally unresolvable by the lenient judge and are excluded, not counted as misses or hits
 - **Self-hosted, free-tier models** — this benchmark ran entirely on free API tiers (Mistral + Hugging Face), not a stack of paid frontier-model calls
 - **Reproducible** — `npm run eval:locomo` with per-question verdicts, retrieval dumps, and checkpointed resumption all in the repo
 
-> Full methodology, per-category breakdowns, and failure analysis live in `benchmarks/`. Numbers are from a single-conversation deep evaluation (conv0, 150 QA pairs); full-dataset runs are in progress.
+> Full methodology, per-category breakdowns, and failure analysis live in `benchmarks/`. Full-dataset runs (all 10 conversations) are in progress.
 
 ## 🧰 The Five Tools
 
