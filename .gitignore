@@ -1,47 +1,48 @@
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
 
-# Dependencies and build output
-.commandcode/
-node_modules/
-dist/
-dist-ssr/
-*.local
 
-# Environment
-.env
 
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
-.DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
 
-# Others
+
+
+
+
 AGENTS.md
-
-# Benchmarks: track harness scripts, ignore datasets + generated results
-benchmarks/results/
+ARCHITECTURE.md
 benchmarks/locomo/*.json
-
+benchmarks/results/
+# Benchmarks: track harness scripts, ignore datasets + generated results
+.commandcode/
 # Cursor local MCP config (contains machine-specific absolute paths)
 .cursor/mcp.json
-
-# Local progress tracking
-progress.md
-docs/progress.md
-
-# Internal notes & plans
+# Dependencies and build output
+dist/
+dist-ssr/
 docs/confidential/
 docs/engine-notes.md
+docs/progress.md
+.DS_Store
+# Editor directories and files
+.env
+# Environment
+.idea
+# Internal notes & plans
+lerna-debug.log*
+*.local
+# Local progress tracking
+*.log
+logs
+# Logs
+*.njsproj
+node_modules/
+npm-debug.log*
+*.ntvs*
+# Others
+pnpm-debug.log*
+progress.md
+*.sln
+*.suo
+*.sw?
+.vscode/*
+!.vscode/extensions.json
+yarn-debug.log*
+yarn-error.log*
