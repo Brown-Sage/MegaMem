@@ -68,7 +68,7 @@ test('schema covers the metrics the plan requires', () => {
   for (const key of [
     'saves.create', 'saves.update', 'saves.skip', 'saves.error',
     'searches.count',
-    'gate.fired', 'gate.passed', 'gate.gated', 'gate.failedOpen',
+    'gate.fired', 'gate.passed', 'gate.gated', 'gate.failedOpen', 'gate.failedEmpty',
     'extraction.runs', 'extraction.completed', 'extraction.failed',
     'extraction.skippedByWriteLog',
     'hook.errors'

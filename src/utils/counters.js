@@ -21,6 +21,7 @@ const SCHEMA = {
   'gate.passed': 0,
   'gate.gated': 0,
   'gate.failedOpen': 0,
+  'gate.failedEmpty': 0,
   'extraction.runs': 0,
   'extraction.completed': 0,
   'extraction.failed': 0,

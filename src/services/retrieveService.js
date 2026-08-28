@@ -167,6 +167,18 @@ const buildRelevanceMessages = ({ query, memories }) => [
   }
 ]
 
+// Strict verdict parse: reasoner think-blocks are stripped first (they may
+// legitimately contain either word), then the reply must START with YES or
+// NO. Anything else (empty budget-starved content, rambling prose) counts as
+// "no decision rendered" rather than a NO — see relevanceGate.
+const parseGateVerdict = (rawContent) => {
+  const content = String(rawContent || '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .trim()
+  const match = /^(YES|NO)\b/i.exec(content)
+  return match ? match[1].toUpperCase() : null
+}
+
 // Returns {gated:boolean} — gated=true means the candidates were judged
 // non-answerable and the caller should treat retrieval as empty.
 const relevanceGate = async (query, memories) => {
@@ -184,11 +196,14 @@ const relevanceGate = async (query, memories) => {
       // it from silently failing open and letting adversarial queries through.
       maxRetries: 4
     })
-    const verdict = /YES/i.test(content || '')
-    if (!verdict) {
-      return { gated: true }
-    }
-    return { gated: false, passed: true }
+    const verdict = parseGateVerdict(content)
+    if (verdict === 'NO') return { gated: true }
+    if (verdict === 'YES') return { gated: false, passed: true }
+    // No decision rendered (empty/garbage content — reachable when reasoning
+    // tokens eat the whole max_tokens budget under load). Mechanical failure
+    // is not a judgment of irrelevance: fail open like the error path below,
+    // but flag it so the caller counts it separately in /stats.
+    return { gated: false, failedOpen: true, failedEmpty: true }
   } catch (err) {
     // Fail open: if the gate itself errors, keep the vector results rather
     // than losing good retrievals because the judge is down.
@@ -262,7 +277,8 @@ const retrieveMemory = async (query, sessionIdOrIds, topK = 5, minScore = DEFAUL
       if (relatedLimit > 0) return { memories: [], related: [] }
       return []
     }
-    if (verdict.failedOpen) bump('gate.failedOpen', sessionIds[0])
+    if (verdict.failedEmpty) bump('gate.failedEmpty', sessionIds[0])
+    else if (verdict.failedOpen) bump('gate.failedOpen', sessionIds[0])
     else bump('gate.passed', sessionIds[0])
   }
 
@@ -275,4 +291,4 @@ const retrieveMemory = async (query, sessionIdOrIds, topK = 5, minScore = DEFAUL
   return ranked
 }
 
-module.exports = { retrieveMemory, searchLexical: searchLexicalScored, relevanceGate, pickRelated, DEFAULT_MIN_SCORE }
+module.exports = { retrieveMemory, searchLexical: searchLexicalScored, relevanceGate, parseGateVerdict, pickRelated, DEFAULT_MIN_SCORE }
