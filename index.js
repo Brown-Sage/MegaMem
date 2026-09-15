@@ -1,4 +1,4 @@
-require('dotenv').config()
+require('./src/config/env')
 const express = require('express')
 const connectDB = require('./src/config/db')
 const { child } = require('./src/utils/log')

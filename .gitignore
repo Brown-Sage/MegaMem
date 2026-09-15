@@ -14,6 +14,8 @@ benchmarks/results/
 .commandcode/
 # Cursor local MCP config (contains machine-specific absolute paths)
 .cursor/mcp.json
+# Hook scratch state (topic index, per-session claim markers)
+.cursor/hooks/state/
 # Dependencies and build output
 dist/
 dist-ssr/

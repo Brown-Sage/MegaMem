@@ -19,7 +19,7 @@
  * Exit code 0 = all good, 1 = something needs fixing.
  */
 
-require('dotenv').config({ quiet: true })
+const { PACKAGE_ROOT, homeEnvPath, loadedEnvFiles } = require('../src/config/env')
 
 const fs = require('fs')
 const path = require('path')
@@ -144,6 +144,50 @@ const checkEndToEnd = async () => {
   }
 }
 
+// 2b — global install: without it, memory only works while this repo is open
+const checkGlobalInstall = () => {
+  section('Global install')
+  const { MCP_JSON, HOOKS_JSON, HOOKS_DIR, HOOKS, readInstallInfo } = require('./install-global')
+
+  const info = readInstallInfo()
+  if (!info) {
+    warn('Not installed globally — memory only works while this repo is open. Run: megamem setup')
+  } else if (!fs.existsSync(info.packageRoot)) {
+    fail(`Global install points at a missing directory (${info.packageRoot}) — re-run: megamem setup`)
+  } else {
+    pass(`Installed from ${info.packageRoot} (${info.installedAt})`)
+  }
+
+  if (fs.existsSync(homeEnvPath())) pass(`Config at ${homeEnvPath()} (independent of this repo)`)
+  else warn(`No ${homeEnvPath()} — a global install would break if this repo moves`)
+
+  try {
+    const config = JSON.parse(fs.readFileSync(MCP_JSON, 'utf8'))
+    if (config?.mcpServers?.megamem) pass(`MCP server registered in ${MCP_JSON}`)
+    else warn(`megamem missing from ${MCP_JSON} — run: megamem setup`)
+  } catch {
+    warn(`Could not read ${MCP_JSON} — run: megamem setup`)
+  }
+
+  try {
+    const config = JSON.parse(fs.readFileSync(HOOKS_JSON, 'utf8'))
+    const registered = ['sessionStart', 'sessionEnd'].filter((event) =>
+      (config.hooks?.[event] || []).some((entry) => /megamem-session-(start|end)\.js/.test(entry.command || ''))
+    )
+    if (registered.length === 2) pass(`Hooks registered in ${HOOKS_JSON} (${registered.join(', ')})`)
+    else if (registered.length === 0) warn(`MegaMem hooks missing from ${HOOKS_JSON} — run: megamem setup`)
+    else fail(`Partial hook registration (${registered.join(', ')}) — re-run: megamem setup`)
+  } catch {
+    warn(`Could not read ${HOOKS_JSON} — run: megamem setup`)
+  }
+
+  for (const hook of HOOKS) {
+    const target = path.join(PACKAGE_ROOT, hook.target)
+    if (!fs.existsSync(path.join(HOOKS_DIR, hook.launcher))) warn(`Missing hook launcher ${hook.launcher}`)
+    else if (!fs.existsSync(target)) fail(`Hook launcher points at a missing file: ${target}`)
+  }
+}
+
 const main = async () => {
   // 1 — Node version
   section('Node')
@@ -154,19 +198,18 @@ const main = async () => {
     fail(`Node ${process.versions.node} — MegaMem requires 18+`)
   }
 
-  // 2 — required keys (via real environment or .env file)
+  // 2 — required keys (via real environment or either .env file)
   let envComplete = true
   section('Environment (.env)')
-  const envPath = path.join(__dirname, '..', '.env')
   const missing = ['MONGO_URI', 'GROQ_API_KEY', 'HUGGINGFACE_API_KEY']
     .filter((k) => !process.env[k] || !String(process.env[k]).trim())
 
-  if (!fs.existsSync(envPath) && missing.length > 0) {
-    fail(`.env not found and ${missing.join(', ')} not set — copy the template: cp .env.example .env`)
+  if (loadedEnvFiles.length === 0 && missing.length > 0) {
+    fail(`No .env found and ${missing.join(', ')} not set — run "megamem setup" or: cp .env.example .env`)
     envComplete = false
   } else {
-    if (fs.existsSync(envPath)) pass('.env found')
-    else warn('No .env file (config comes from process environment, e.g. Docker --env-file)')
+    if (loadedEnvFiles.length === 0) warn('No .env file (config comes from process environment, e.g. Docker --env-file)')
+    for (const file of loadedEnvFiles) pass(`loaded ${file}`)
     for (const key of missing) { fail(`${key} is not set`); envComplete = false }
     for (const key of ['MONGO_URI', 'GROQ_API_KEY', 'HUGGINGFACE_API_KEY']) {
       if (!missing.includes(key)) pass(`${key} is set`)
@@ -177,6 +220,8 @@ const main = async () => {
   } else {
     pass(`MEGAMEM_USER_ID=${process.env.MEGAMEM_USER_ID}`)
   }
+
+  checkGlobalInstall()
 
   // 3+4 — MongoDB / Atlas
   if (envComplete && process.env.MONGO_URI) {
@@ -273,7 +318,7 @@ const main = async () => {
     console.log('\nSome checks failed — fix the ✖ items above and re-run: npm run doctor\n')
     process.exit(1)
   }
-  console.log('\nAll checks passed. MegaMem is ready — connect your editor via: npm run install:mcp\n')
+  console.log('\nAll checks passed. MegaMem is ready — install it globally with: megamem setup\n')
 }
 
 main()

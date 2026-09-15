@@ -3,7 +3,7 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 
-const { sessionLayersForWorkspace } = require('./common')
+const { sessionLayersForWorkspace, claimSessionOnce } = require('./common')
 
 // Reads the transcript, snapshots it to tmp (Cursor may reclaim the original),
 // then hands off to a detached worker and exits immediately — extraction can
@@ -15,8 +15,17 @@ const main = async () => {
   let payload = {}
   try { payload = JSON.parse(input || '{}') } catch { /* ignore */ }
 
+  // Once installed globally, the user-level hook and this repo's project hook
+  // both fire for the same conversation. Extract once, not twice.
+  const claim = claimSessionOnce('session-end', payload)
+  if (!claim.claimed) {
+    process.stdout.write('{}\n')
+    return
+  }
+
   const transcriptPath = payload.transcript_path
   if (!transcriptPath) {
+    claim.release()
     process.stdout.write('{}\n')
     return
   }
@@ -24,6 +33,7 @@ const main = async () => {
   try {
     const raw = fs.readFileSync(transcriptPath, 'utf8')
     if (!raw.trim()) {
+      claim.release()
       process.stdout.write('{}\n')
       return
     }
@@ -49,6 +59,7 @@ const main = async () => {
     console.error(`[megamem session-end] extraction handed off to worker pid=${child.pid}`)
   } catch (error) {
     console.error('[megamem session-end]', error.message)
+    claim.release()
   }
 
   process.stdout.write('{}\n')

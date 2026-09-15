@@ -3,8 +3,7 @@
 // The hook spawns this process and exits immediately so long extraction
 // pipelines never hit the hook timeout. Runs independently of the editor.
 
-const path = require('path')
-require('dotenv').config({ path: path.join(__dirname, '..', '.env') })
+require('../src/config/env')
 
 const getArg = (name) => {
   const idx = process.argv.indexOf(`--${name}`)

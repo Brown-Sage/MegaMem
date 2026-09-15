@@ -1,5 +1,4 @@
-const path = require('path')
-require('dotenv').config({ path: path.join(__dirname, '..', '.env'), quiet: true })
+require('./config/env')
 const connectDB = require('./config/db')
 const { handleJsonRpc } = require('./services/mcpToolService')
 const { child } = require('./utils/log')
