@@ -7,6 +7,11 @@ const profileSchema = new mongoose.Schema({
   sessionId: { type: String, required: true },
   text: { type: String, required: true },
   memoryCount: { type: Number, required: true, default: 0 },
+  // Set when a memory this profile was compiled from is edited in place. A
+  // rewrite leaves memoryCount unchanged, so the count-based staleness rule
+  // cannot see it — without this flag a corrected memory never reaches the
+  // compiled profile and the outdated claim keeps being injected.
+  stale: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 })

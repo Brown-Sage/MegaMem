@@ -29,14 +29,19 @@ const asSessionIds = (sessionIdOrIds) => {
 
 const inferLayers = (sessionIds) => {
   const userId = userSessionId()
-  const workspaceId = workspaceSessionId()
+  const cwdWorkspaceId = workspaceSessionId()
   const onlyExplicit = sessionIds.length === 1
     && sessionIds[0] !== userId
-    && sessionIds[0] !== workspaceId
+    && sessionIds[0] !== cwdWorkspaceId
 
   if (onlyExplicit) {
     return { userId: sessionIds[0], workspaceId: sessionIds[0], explicit: sessionIds[0] }
   }
+
+  // Trust the buckets the caller resolved rather than re-deriving the workspace
+  // from process.cwd(): a user-level Cursor hook is spawned in ~/.cursor/, so
+  // that guess mislabeled its workspace memories as [explicit].
+  const workspaceId = sessionIds.find((id) => id !== userId) || cwdWorkspaceId
 
   return { userId, workspaceId, explicit: null }
 }
@@ -291,4 +296,4 @@ const retrieveMemory = async (query, sessionIdOrIds, topK = 5, minScore = DEFAUL
   return ranked
 }
 
-module.exports = { retrieveMemory, searchLexical: searchLexicalScored, relevanceGate, parseGateVerdict, pickRelated, DEFAULT_MIN_SCORE }
+module.exports = { retrieveMemory, searchLexical: searchLexicalScored, relevanceGate, parseGateVerdict, pickRelated, inferLayers, DEFAULT_MIN_SCORE }

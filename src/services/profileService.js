@@ -55,6 +55,7 @@ const compileProfile = async (sessionId, memories) => {
       sessionId,
       text: profile,
       memoryCount: memories.length,
+      stale: false,
       updatedAt: new Date()
     },
     { upsert: true, returnDocument: 'after' }
@@ -71,9 +72,27 @@ const ACTIVE_FILTER = { status: 'active' }
 // Deletions shrink memoryCount below the cached watermark, which makes the
 // naive difference go negative and look "fresh" forever — a profile that
 // asserts a deleted fact would never refresh. Any net decrease is stale.
-const isProfileStale = ({ cachedMemoryCount = 0, memoryCount = 0 }) =>
+//
+// Additions and deletions both move the count, but an in-place rewrite does
+// not: editing a memory to fix a wrong claim left the same number of memories,
+// so the profile kept restating the old claim indefinitely. `stale` carries
+// that signal, set by invalidateProfiles() on content-changing writes.
+const isProfileStale = ({ cachedMemoryCount = 0, memoryCount = 0, stale = false }) =>
+  stale === true ||
   memoryCount - cachedMemoryCount >= REFRESH_AFTER_NEW_MEMORIES ||
   memoryCount < cachedMemoryCount
+
+// Called from the write paths that change a memory's text. Clears the cache for
+// the affected buckets so the next getProfile() recompiles from the new content.
+const invalidateProfiles = async (sessionIds) => {
+  const ids = [...new Set((sessionIds || []).filter(Boolean))]
+  if (ids.length === 0) return
+
+  await Profile.updateMany(
+    { userId: currentUserId(), sessionId: { $in: ids } },
+    { stale: true }
+  ).catch((err) => log(`[profile] invalidate failed: ${err.message}`))
+}
 
 const getProfile = async (sessionId, { force = false } = {}) => {
   const ownerFilter = { sessionId, userId: currentUserId() }
@@ -86,7 +105,8 @@ const getProfile = async (sessionId, { force = false } = {}) => {
 
   if (!force && cached && !isProfileStale({
     cachedMemoryCount: cached.memoryCount || 0,
-    memoryCount
+    memoryCount,
+    stale: cached.stale === true
   })) {
     return cached.text
   }
@@ -108,6 +128,7 @@ const getProfile = async (sessionId, { force = false } = {}) => {
 module.exports = {
   getProfile,
   compileProfile,
+  invalidateProfiles,
   isProfileStale,
   MIN_MEMORIES_FOR_PROFILE,
   REFRESH_AFTER_NEW_MEMORIES

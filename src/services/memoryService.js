@@ -5,6 +5,7 @@ const { computeDedupKey } = require('../utils/dedupKey')
 const { currentUserId } = require('../utils/ownership')
 const { child } = require('../utils/log')
 const { MEMORY_TYPES } = require('../constants/memoryTypes')
+const { invalidateProfiles } = require('./profileService')
 
 const log = child('memory')
 
@@ -83,6 +84,11 @@ const updateMemory = async (memoryId, text, type, { actor = 'mcp', embedding = n
   }
 
   await existing.save()
+
+  // A rewrite changes what the profile should say without changing how many
+  // memories exist, so the count-based staleness rule cannot see it.
+  await invalidateProfiles([existing.sessionId])
+
   await recordHistory({
     memoryId,
     sessionId: existing.sessionId,
